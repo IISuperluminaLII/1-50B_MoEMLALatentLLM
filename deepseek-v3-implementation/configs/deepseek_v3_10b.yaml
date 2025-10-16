@@ -1,0 +1,130 @@
+# DeepSeek-V3 10B Configuration
+# Total: ~10B parameters, ~3B active per token
+# Hardware: 8-16 GPUs (A100/H100)
+
+model:
+  num_layers: 32
+  vocab_size: 100000
+
+  # MLA (Multi-head Latent Attention)
+  mla:
+    d_model: 3072
+    d_latent: 768       # 1/4 of d_model
+    num_heads: 48
+    num_kv_heads: 48
+    use_fp8_kv: true    # Enable FP8 for H100
+    max_context_length: 32768
+    use_flash_mla: true
+    flash_mla_backend: "auto"
+    use_rope: true
+    rope_theta: 10000.0
+
+  # MoE (Mixture of Experts)
+  moe:
+    num_experts: 32
+    num_experts_per_token: 4
+    expert_intermediate_size: 8192   # ~2.67x d_model
+    num_shared_experts: 1
+    shared_intermediate_size: 8192
+
+    # Routing
+    router_aux_loss_weight: 0.0005
+    router_temperature: 1.0
+    router_noise_std: 0.1
+    capacity_factor: 1.0
+
+    # Load balancing
+    use_aux_loss_free: true   # Use aux-loss-free at this scale
+    balance_loss_type: "entropy"
+
+    # DeepEP
+    use_deep_ep: true
+    deep_ep_fp8: true
+    deep_ep_async: true
+
+  # Normalization
+  norm_type: "rmsnorm"
+  norm_eps: 1.0e-6
+
+  # Embeddings
+  tie_word_embeddings: false
+
+  # Initialization
+  init_method_std: 0.012
+
+# Parallelism
+parallel:
+  tensor_parallel_size: 2
+  pipeline_parallel_size: 2
+  expert_parallel_size: 2
+  data_parallel_size: -1
+
+  zero_stage: 1
+  zero_offload: false
+
+  overlap_grad_reduce: true
+  overlap_param_gather: true
+
+# Training
+training:
+  # Batch settings
+  global_batch_size: 1024
+  micro_batch_size: 2
+  seq_length: 4096
+
+  # Chinchilla-optimal scaling (REQ-T2P-1, REQ-T2P-2)
+  # 10B model: ~8.81B active params → 176.3B tokens @20 T/P, 229.1B @26 T/P
+  # Tokens/step: 1024 × 4096 = 4,194,304
+  # Required steps: 176.3B / 4.19M ≈ 42,036 steps
+  tokens_per_parameter_ratio: 20.0  # Conservative Chinchilla optimum
+  total_training_tokens: 176300000000  # 176.3B tokens (8.81B × 20)
+
+  # Optimization
+  learning_rate: 2.0e-4
+  min_learning_rate: 2.0e-5
+  lr_warmup_steps: 2000
+  lr_decay_style: "cosine"
+  weight_decay: 0.1
+  grad_clip: 1.0
+
+  # Mixed precision
+  use_fp16: false
+  use_bf16: true
+  use_fp8: true
+
+  # Multi-token prediction
+  use_mtp: true
+  num_predict_tokens: 2
+
+  # Schedule
+  train_steps: 42036  # Updated for Chinchilla compliance
+  eval_interval: 1000
+  save_interval: 5000
+  log_interval: 10
+
+  # Optimizer
+  optimizer: "adamw"
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_eps: 1.0e-8
+
+# Data
+data:
+  train_data_path: "/path/to/train_data"
+  val_data_path: "/path/to/val_data"
+  num_workers: 4
+  prefetch_factor: 2
+
+# Checkpointing
+checkpoint:
+  save_dir: "./checkpoints_10b"
+  keep_last_n: 5
+  save_optimizer_states: true
+
+# Logging
+logging:
+  output_dir: "./outputs_10b"
+  use_wandb: true
+  wandb_project: "deepseek-v3-10b"
+  wandb_entity: null
+  log_level: "INFO"

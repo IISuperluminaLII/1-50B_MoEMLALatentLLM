@@ -1,0 +1,152 @@
+# Data Preprocessing Configuration
+# This configuration defines the complete data sanitization pipeline
+
+# Input/Output Configuration
+# NOTE: input_path is REQUIRED - provide via --input argument or set here
+# Examples:
+#   - Local file: "./my_data/train.jsonl"
+#   - HuggingFace dataset: "wikitext" (for testing)
+input_path: null                      # REQUIRED: Set via --input argument
+output_dir: "./preprocessed_data"     # USER-DEFINED: Where to save preprocessed data
+output_format: "jsonl"                # Output format: jsonl, parquet, hf_dataset
+save_intermediate: true               # Save output after each pipeline stage
+
+# Stage 1: Preliminary Cleaning
+# Based on Li et al. (2025), arXiv:2505.18458
+cleaning:
+  enabled: true
+  unicode_normalization: "NFKC"  # Canonical + compatibility decomposition
+  fix_encoding: true              # Fix mojibake with ftfy
+  unescape_html: true            # Decode HTML entities
+  remove_control_chars: true     # Remove non-printable control characters
+  normalize_whitespace: true     # Normalize multiple spaces, newlines
+
+# Stage 2: Deduplication
+# Based on Lee et al. (2022), arXiv:2107.06499
+deduplication:
+  enabled: true
+  method: "minhash"         # minhash, exact, or both
+  threshold: 0.8            # Jaccard similarity threshold (0.0-1.0)
+  num_perm: 128             # Number of hash functions (GPT-3: 10, Gopher: 450)
+  n_gram: 13                # N-gram size (Gopher uses 13)
+  seed: 42                  # Random seed for reproducibility
+
+# Stage 3: Heuristic Filtering
+# Based on Gopher (Rae et al. 2021), C4 (Raffel et al. 2020),
+# RefinedWeb (Penedo et al. 2023), FineWeb (Penedo et al. 2024)
+heuristic_filters:
+  enabled: true
+
+  # Document length filters (Gopher)
+  min_doc_length: 200       # Minimum characters
+  max_doc_length: null      # Maximum characters (null = no limit)
+  min_word_count: 50        # Minimum words (Gopher threshold)
+  max_word_count: null      # Maximum words (null = no limit)
+
+  # Word-level filters (Gopher)
+  min_mean_word_length: 3.0   # Minimum average word length
+  max_mean_word_length: 10.0  # Maximum average word length
+
+  # Character-level filters (C4, RefinedWeb)
+  min_alpha_ratio: 0.5        # Minimum alphabetic character ratio (C4)
+  max_digit_ratio: 0.3        # Maximum digit ratio (RefinedWeb)
+  max_uppercase_ratio: 0.3    # Maximum uppercase ratio (C4)
+  max_special_char_ratio: 0.3 # Maximum special character ratio
+
+  # Repetition filters (FineWeb)
+  max_repetition_ratio: 0.2   # Maximum repeated n-gram ratio
+  max_ellipsis_count: 30.0    # Per 100 words (Gopher)
+  max_bullet_count: 20.0      # Per 100 words
+
+  # Natural language indicators
+  min_stop_word_ratio: 0.1    # Minimum stop word ratio
+
+# Stage 4: Quality Filtering (Optional)
+# Based on Xu et al. (2024), Nguyen et al. (2024)
+# Requires pre-trained models
+quality_filters:
+  enabled: false  # Disabled by default (requires trained models)
+
+  # FastText quality classifier
+  use_fasttext: true
+  fasttext_model_path: null  # Path to trained FastText model (.bin)
+  fasttext_threshold: 0.5    # Minimum quality score (0.0-1.0)
+
+  # KenLM perplexity filter
+  use_kenlm: false
+  kenlm_model_path: null     # Path to KenLM model (.arpa or .bin)
+  kenlm_max_perplexity: 1000.0  # Maximum perplexity
+
+  # Ensemble configuration
+  fasttext_weight: 0.6       # Weight for FastText score
+  kenlm_weight: 0.4          # Weight for KenLM score
+  ensemble_threshold: 0.5    # Minimum ensemble score
+
+# Stage 5: Domain Mixing
+# Based on DeepSeek-V3 (2024), Llama 3 (2024)
+domain_mixing:
+  enabled: true
+  composition: "deepseek_v3"  # deepseek_v3, llama3, balanced, or custom
+  target_tokens: null         # Target corpus size in tokens (null = use all)
+  shuffle_output: true        # Shuffle documents after mixing
+
+# Processing Configuration
+processing:
+  batch_size: 10000           # Documents per batch
+  num_workers: 1              # Number of parallel workers (future)
+  show_progress: true         # Show progress bars
+  checkpoint_interval: 100000 # Save checkpoint every N documents
+
+# ============================================================================
+# PRESET CONFIGURATIONS
+# ============================================================================
+
+# To use a different composition, change domain_mixing.composition to:
+#
+# "deepseek_v3" - DeepSeek-V3 style (92% natural language, 5% code, 3% math)
+#   - Optimized for general-purpose LLMs with strong math/code capabilities
+#   - Reference: DeepSeek-V3 (2024), arXiv:2412.19437
+#
+# "llama3" - Llama 3 style (balanced technical content)
+#   - Emphasis on code and technical documentation
+#   - Reference: Llama 3 (2024), arXiv:2407.21783
+#
+# "balanced" - Equal weight across all domains
+#   - Good for exploratory experiments
+
+# ============================================================================
+# USAGE EXAMPLES
+# ============================================================================
+
+# 1. Test with HuggingFace dataset (wikitext - small, well-known):
+#    python scripts/preprocess_data.py \
+#      --config configs/data_preprocessing.yaml \
+#      --input "wikitext" \
+#      --output ./test_output
+#
+# 2. Preprocess your own JSONL file:
+#    python scripts/preprocess_data.py \
+#      --config configs/data_preprocessing.yaml \
+#      --input /path/to/your/data.jsonl \
+#      --output /mnt/shared/preprocessed
+#
+# 3. Custom output location:
+#    python scripts/preprocess_data.py \
+#      --config configs/data_preprocessing.yaml \
+#      --input your_data.jsonl \
+#      --output /your/custom/path
+#
+# 4. Disable specific stages:
+#    python scripts/preprocess_data.py \
+#      --config configs/data_preprocessing.yaml \
+#      --input data.jsonl \
+#      --no-deduplication \
+#      --no-quality-filters
+#
+# 5. Use during training:
+#    python src/training/train.py \
+#      --config configs/deepseek_v3_small.yaml \
+#      --preprocess-data \
+#      --data-config configs/data_preprocessing.yaml \
+#      --raw-data-path your_data.jsonl \
+#      --preprocessed-data-path ./preprocessed_data/final.jsonl
