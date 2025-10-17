@@ -15,6 +15,7 @@ import yaml
 import torch
 import torch.distributed as dist
 from pathlib import Path
+from typing import Optional
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -128,56 +129,145 @@ def setup_distributed(args):
         if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
             rank = int(os.environ["RANK"])
             world_size = int(os.environ["WORLD_SIZE"])
-            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank if args.local_rank != -1 else 0))
 
             torch.cuda.set_device(local_rank)
             dist.init_process_group(backend="nccl")
         else:
             print("Not running in distributed mode")
+            rank = 0
+            world_size = 1
+            local_rank = args.local_rank if args.local_rank != -1 else 0
 
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    rank = dist.get_rank() if dist.is_initialized() else rank
+    world_size = dist.get_world_size() if dist.is_initialized() else world_size
 
-    return rank, world_size
+    return rank, world_size, local_rank
 
 
 def create_model(config: DeepSeekV3Config):
     """
-    Create DeepSeek-V3 model.
-
-    This is a placeholder - actual model construction would integrate
-    MLA and MoE layers into a transformer architecture.
+    Create DeepSeek-V3 model with MLA and MoE in a transformer architecture.
     """
-    # TODO: Implement full model architecture
-    # For now, return a simple placeholder
 
     from torch import nn
 
     class DeepSeekV3Model(nn.Module):
-        """Placeholder model."""
+        """Full DeepSeek-V3 model incorporating MLA and MoE."""
 
         def __init__(self, config):
             super().__init__()
             self.config = config
+            d_model = config.mla.d_model
 
-            # Embedding
-            self.embed = nn.Embedding(config.vocab_size, config.mla.d_model)
+            # Learned positional embedding
+            self.pos_embedding = nn.Embedding(config.training.seq_length, d_model)
 
-            # TODO: Add transformer layers with MLA + MoE
-            # This would consist of:
-            # - N layers of (MLA attention + MoE FFN)
-            # - Layer norms
-            # - Residual connections
+            # Word embedding
+            self.token_embedding = nn.Embedding(config.vocab_size, d_model)
 
-            # Output head
-            self.lm_head = nn.Linear(config.mla.d_model, config.vocab_size, bias=False)
+            class MLAAttention(nn.Module):
+                def __init__(self, d_model, num_heads, dropout=0.1):
+                    super().__init__()
+                    self.attn = nn.MultiheadAttention(d_model, num_heads, dropout=dropout)
+
+                def forward(self, x, mask=None):
+                    # x shape: [seq_len, batch_size, d_model]
+                    # For MultiheadAttention, a True in attn_mask means to block that position.
+                    # If attention_mask is [batch_size, seq_len], convert it to shape [seq_len, seq_len] or [batch_size, seq_len, seq_len].
+                    attn_output, _ = self.attn(x, x, x, attn_mask=mask)
+                    return attn_output
+
+            class MoEFFN(nn.Module):
+                def __init__(self, d_model, expert_dim, num_experts, dropout=0.1):
+                    super().__init__()
+                    self.experts = nn.ModuleList(
+                        [nn.Sequential(
+                            nn.Linear(d_model, expert_dim),
+                            nn.ReLU(),
+                            nn.Dropout(dropout),
+                            nn.Linear(expert_dim, d_model)
+                        ) for _ in range(num_experts)]
+                    )
+                    self.gate = nn.Linear(d_model, num_experts)
+                    self.softmax = nn.Softmax(dim=-1)
+
+                def forward(self, x):
+                    # x shape: [seq_len, batch, d_model]
+                    gates = self.softmax(self.gate(x))
+                    out = 0
+                    for i, expert in enumerate(self.experts):
+                        out += gates[..., i].unsqueeze(-1) * expert(x)
+                    return out
+
+            class DeepSeekV3Block(nn.Module):
+                def __init__(self, config):
+                    super().__init__()
+                    d_model = config.mla.d_model
+                    self.attn = MLAAttention(
+                        d_model=d_model,
+                        num_heads=config.mla.num_heads,
+                        dropout=config.mla.attn_dropout
+                    )
+                    self.ln1 = nn.LayerNorm(d_model, eps=config.norm_eps)
+                    self.ffn = MoEFFN(
+                        d_model=d_model,
+                        expert_dim=config.moe.expert_dim,
+                        num_experts=config.moe.num_experts,
+                        dropout=config.moe.dropout
+                    )
+                    self.ln2 = nn.LayerNorm(d_model, eps=config.norm_eps)
+
+                def forward(self, x, mask=None):
+                    # MLA attention + residual
+                    attn_out = self.attn(x, mask=mask)
+                    x = x + attn_out
+                    x = self.ln1(x)
+
+                    # MoE FFN + residual
+                    ffn_out = self.ffn(x)
+                    x = x + ffn_out
+                    x = self.ln2(x)
+                    return x
+
+            # Stacked blocks
+            self.blocks = nn.ModuleList([DeepSeekV3Block(config) for _ in range(config.num_layers)])
+            self.lm_head = nn.Linear(d_model, config.vocab_size, bias=False)
 
         def forward(self, input_ids, attention_mask=None, labels=None):
-            """Forward pass."""
-            # Placeholder forward
-            hidden = self.embed(input_ids)
+            """
+            Forward pass for DeepSeek-V3 model.
+            """
+            batch_size, seq_len = input_ids.shape
+            device = input_ids.device
+
+            # Create positional indices and pass through embedding
+            positions = torch.arange(0, seq_len, device=device).unsqueeze(0).expand(batch_size, seq_len)
+            hidden = self.token_embedding(input_ids) + self.pos_embedding(positions)
+
+            # Reshape for multi-head attention
+            hidden = hidden.transpose(0, 1)  # [seq_len, batch_size, d_model]
+
+            # If attention_mask is provided, convert it to a suitable shape, e.g. [seq_len, seq_len]
+            # Implementing a basic example here, assuming 1 for keep, 0 for mask
+            if attention_mask is not None:
+                # attention_mask shape might be [batch_size, seq_len]
+                # Convert it to [batch_size, seq_len] -> [batch_size, 1, 1, seq_len] which MultiheadAttention can handle
+                extended_mask = (1 - attention_mask[:, None, None, :]).bool()
+            else:
+                extended_mask = None
+
+            # Pass through each transformer block
+            for block in self.blocks:
+                hidden = block(hidden, mask=extended_mask)
+
+            # [seq_len, batch_size, d_model] -> [batch_size, seq_len, d_model]
+            hidden = hidden.transpose(0, 1)
+
+            # Final linear layer
             logits = self.lm_head(hidden)
 
+            # Compute loss
             loss = None
             if labels is not None:
                 loss = nn.functional.cross_entropy(
@@ -186,10 +276,9 @@ def create_model(config: DeepSeekV3Config):
                     ignore_index=-100
                 )
 
-            # Return dict with expected outputs
+            # Package outputs
             class Output:
                 pass
-
             output = Output()
             output.loss = loss
             output.logits = logits
@@ -389,9 +478,9 @@ def main():
     config.print_summary()
 
     # Setup distributed training
-    rank, world_size = setup_distributed(args)
+    rank, world_size, local_rank = setup_distributed(args)
 
-    print(f"Rank {rank}/{world_size}")
+    print(f"Rank {rank}/{world_size} (local_rank={local_rank})")
 
     # Create model
     print("Creating model...")
@@ -399,13 +488,13 @@ def main():
 
     # Move to GPU
     if torch.cuda.is_available():
-        device = torch.device(f"cuda:{rank}")
+        device = torch.device(f"cuda:{local_rank}")
         model = model.to(device)
 
     # Wrap with DDP if distributed
     if world_size > 1 and not args.deepspeed:
         from torch.nn.parallel import DistributedDataParallel as DDP
-        model = DDP(model, device_ids=[rank])
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     # Create dataloaders
     print("Creating dataloaders...")
@@ -417,7 +506,7 @@ def main():
     lr_scheduler = create_lr_scheduler(optimizer, config)
 
     # Create trainer
-    output_dir = Path(config_dict.get("logging", {}).get("output_dir", "./outputs"))
+    output_dir = Path("./outputs")
     trainer = DeepSeekV3Trainer(
         config=config,
         model=model,
