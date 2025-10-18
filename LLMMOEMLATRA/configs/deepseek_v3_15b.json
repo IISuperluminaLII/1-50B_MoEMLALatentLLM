@@ -1,0 +1,308 @@
+{
+  "experiment_name": "deepseek_v3_15b",
+  "output_dir": "./outputs/15b",
+  "seed": 42,
+  "model": {
+    "num_layers": 36,
+    "vocab_size": 128000,
+    "norm_type": "rmsnorm",
+    "norm_eps": 1e-06,
+    "tie_word_embeddings": false,
+    "init_method_std": 0.006,
+    "dense_layer_interval": 3,
+    "mla": {
+      "d_model": 3584,
+      "d_latent": 896,
+      "num_heads": 56,
+      "num_kv_heads": 56,
+      "use_fp8_kv": true,
+      "max_context_length": 16384,
+      "use_flash_mla": true,
+      "flash_mla_backend": "auto",
+      "fallback_to_dense": true,
+      "use_rope": true,
+      "rope_theta": 10000.0,
+      "sliding_window": null,
+      "attn_dropout": 0.0
+    },
+    "moe": {
+      "num_experts": 64,
+      "num_experts_per_token": 8,
+      "expert_intermediate_size": 9856,
+      "expert_dim": 9856,
+      "dropout": 0.0,
+      "num_shared_experts": 4,
+      "shared_intermediate_size": 9856,
+      "router_aux_loss_weight": 0.001,
+      "router_temperature": 1.0,
+      "router_noise_std": 0.0,
+      "capacity_factor": 1.0,
+      "use_aux_loss_free": false,
+      "balance_loss_type": "entropy",
+      "min_expert_capacity": 4,
+      "use_deep_ep": true,
+      "deep_ep_fp8": false,
+      "deep_ep_async": false
+    }
+  },
+  "training": {
+    "global_batch_size": 1024,
+    "micro_batch_size": 1,
+    "seq_length": 4096,
+    "tokens_per_parameter_ratio": 20.0,
+    "total_training_tokens": null,
+    "learning_rate": 0.00015,
+    "min_learning_rate": 1.5e-05,
+    "lr_warmup_steps": 2000,
+    "lr_decay_style": "cosine",
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "use_fp16": false,
+    "use_bf16": true,
+    "use_fp8": false,
+    "use_mtp": true,
+    "num_predict_tokens": 2,
+    "mtp_tokens": 2,
+    "train_steps": 125000,
+    "eval_interval": 1000,
+    "save_interval": 5000,
+    "log_interval": 10,
+    "optimizer": "adamw",
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "adam_eps": 1e-08
+  },
+  "data": {
+    "dataset_name": "allenai/dolma",
+    "dataset_version": "v1_6",
+    "cache_dir": "./data/cache",
+    "chinchilla_tokens": 300000000000,
+    "_comment_chinchilla": "Chinchilla optimal: 20 tokens per parameter for 15B params = 300B tokens (Hoffmann et al., 2022, arXiv:2203.15556)",
+    "preprocessing": {
+      "num_workers": 8,
+      "shuffle": true,
+      "shuffle_seed": 42
+    },
+    "pipeline": {
+      "_comment_pipeline": "SOTA data processing pipeline for LLM training quality",
+      "enabled": true,
+      "stages": [
+        "deduplication",
+        "quality_filtering",
+        "heuristic_filtering",
+        "ranking_filtering",
+        "domain_mixing"
+      ]
+    },
+    "deduplication": {
+      "_comment_dedup": "MinHash LSH deduplication (Lee et al., 2022, arXiv:2107.06499 - Deduplicating Training Data)",
+      "enabled": true,
+      "method": "minhash_lsh",
+      "ngram_size": 13,
+      "num_perm": 128,
+      "threshold": 0.8,
+      "citation": "Lee et al. (2022). Deduplicating Training Data Makes Language Models Better. arXiv:2107.06499"
+    },
+    "quality_filter": {
+      "_comment_quality": "Quality filtering based on CCNet (Wenzek et al., 2020) and RefinedWeb (Penedo et al., 2023)",
+      "enabled": true,
+      "methods": [
+        {
+          "name": "ccnet_quality",
+          "min_score": 0.5,
+          "citation": "Wenzek et al. (2020). CCNet: Extracting High Quality Monolingual Datasets. arXiv:1911.00359"
+        },
+        {
+          "name": "perplexity_filter",
+          "model": "kenlm",
+          "max_perplexity": 1500,
+          "citation": "Penedo et al. (2023). The RefinedWeb Dataset for Falcon LLM. arXiv:2306.01116"
+        }
+      ]
+    },
+    "heuristic_filters": {
+      "_comment_heuristics": "Rule-based filtering from Gopher (Rae et al., 2021) and C4 (Raffel et al., 2020)",
+      "enabled": true,
+      "rules": [
+        {
+          "name": "repetition_filter",
+          "max_char_repetition": 0.2,
+          "max_word_repetition": 0.2,
+          "max_line_repetition": 0.3,
+          "citation": "Rae et al. (2021). Scaling Language Models: Methods, Analysis & Insights. arXiv:2112.11446"
+        },
+        {
+          "name": "length_filter",
+          "min_doc_length": 50,
+          "max_doc_length": 100000,
+          "min_avg_word_length": 3,
+          "max_avg_word_length": 10
+        },
+        {
+          "name": "language_filter",
+          "target_language": "en",
+          "min_language_score": 0.65,
+          "citation": "Raffel et al. (2020). Exploring the Limits of Transfer Learning with T5. JMLR"
+        },
+        {
+          "name": "toxicity_filter",
+          "enabled": false,
+          "_comment": "Disabled for pre-cleaned Dolma data"
+        }
+      ]
+    },
+    "ranking_filter": {
+      "_comment_ranking": "Educational quality ranking from FineWeb-Edu (HuggingFace, 2024) using LLM-as-judge",
+      "enabled": true,
+      "method": "fineweb_edu",
+      "min_educational_score": 2,
+      "max_educational_score": 5,
+      "score_distribution": "favor_high_quality",
+      "citation": "Lozhkov et al. (2024). FineWeb-Edu: LLM-based Educational Quality Filtering. HuggingFace"
+    },
+    "domain_mixer": {
+      "_comment_mixer": "DoReMi adaptive domain weighting (Xie et al., 2023) for optimal domain mixture",
+      "enabled": true,
+      "method": "doremi",
+      "reference_model_size": "280m",
+      "num_epochs": 1,
+      "reweight_temperature": 0.5,
+      "citation": "Xie et al. (2023). DoReMi: Optimizing Data Mixtures Speeds Up Language Model Pretraining. arXiv:2305.10429"
+    },
+    "sources": [
+      {
+        "name": "common_crawl",
+        "subset": "dolma_v1_6_cc",
+        "weight": 0.3,
+        "description": "Common Crawl - Diverse web content from broad internet crawl. Provides general knowledge and language patterns."
+      },
+      {
+        "name": "c4",
+        "subset": "dolma_v1_6_c4",
+        "weight": 0.15,
+        "description": "Colossal Clean Crawled Corpus - High-quality filtered web text. Better quality than raw Common Crawl."
+      },
+      {
+        "name": "refined_web",
+        "subset": "dolma_v1_6_refined_web",
+        "weight": 0.12,
+        "description": "Refined Web (Falcon) - Curated high-quality web pages. Emphasizes educational and informative content."
+      },
+      {
+        "name": "peS2o",
+        "subset": "dolma_v1_6_pes2o",
+        "weight": 0.1,
+        "description": "Semantic Scholar Open Corpus - Academic papers and scientific literature. Enhances technical reasoning."
+      },
+      {
+        "name": "starcoder",
+        "subset": "dolma_v1_6_starcoder",
+        "weight": 0.1,
+        "description": "StarCoder - GitHub source code across multiple languages. Improves code understanding and generation."
+      },
+      {
+        "name": "reddit",
+        "subset": "dolma_v1_6_reddit",
+        "weight": 0.08,
+        "description": "Reddit (PushShift) - Conversational and discussion forum data. Enhances dialogue and informal language."
+      },
+      {
+        "name": "openwebmath",
+        "subset": "dolma_v1_6_openwebmath",
+        "weight": 0.06,
+        "description": "OpenWebMath - Mathematical expressions and problems from web. Improves math reasoning capabilities."
+      },
+      {
+        "name": "redpajama",
+        "subset": "dolma_v1_6_redpajama",
+        "weight": 0.04,
+        "description": "RedPajama v1 - Open reproduction of LLaMA training data. Diverse mixture for generalization."
+      },
+      {
+        "name": "flan",
+        "subset": "dolma_v1_6_flan",
+        "weight": 0.02,
+        "description": "Flan Collection - Instruction-following examples. Helps with task comprehension and following directions."
+      },
+      {
+        "name": "proof_pile_2",
+        "subset": "dolma_v1_6_proof_pile_2",
+        "weight": 0.01,
+        "description": "Proof Pile II - Formal mathematical proofs (Lean, Isabelle, etc.). Enhances logical reasoning."
+      },
+      {
+        "name": "wikimedia",
+        "subset": "dolma_v1_6_wikimedia",
+        "weight": 0.01,
+        "description": "Wikipedia - Encyclopedic knowledge base. Provides factual grounding and structured information."
+      },
+      {
+        "name": "gutenberg",
+        "subset": "dolma_v1_6_gutenberg",
+        "weight": 0.01,
+        "description": "Project Gutenberg - Classic literature and books. Improves narrative understanding and literary style."
+      }
+    ]
+  },
+  "distributed": {
+    "backend": "deepspeed",
+    "launcher": "deepspeed",
+    "tensor_parallel_size": 2,
+    "pipeline_parallel_size": 1,
+    "expert_parallel_size": 2,
+    "data_parallel_size": -1,
+    "zero_stage": 1,
+    "zero_offload": false,
+    "overlap_grad_reduce": true,
+    "overlap_param_gather": true,
+    "deepspeed": {
+      "enabled": true,
+      "config_file": "configs/deepspeed_config.json"
+    },
+    "slurm": {
+      "enabled": false,
+      "partition": "gpu",
+      "nodes": 4,
+      "ntasks_per_node": 8,
+      "gpus_per_node": 8,
+      "cpus_per_task": 16,
+      "time": "48:00:00",
+      "mem": "512G",
+      "job_name": "deepseek_15b",
+      "output": "logs/slurm-%j.out",
+      "error": "logs/slurm-%j.err"
+    }
+  },
+  "checkpointing": {
+    "save_interval": 5000,
+    "save_total_limit": 5,
+    "resume_from_checkpoint": null,
+    "checkpoint_format": "deepspeed",
+    "save_optimizer_states": true
+  },
+  "logging": {
+    "log_interval": 10,
+    "wandb": {
+      "enabled": false,
+      "project": "deepseek-v3-15b",
+      "entity": null,
+      "name": null,
+      "tags": [
+        "15b"
+      ]
+    },
+    "tensorboard": {
+      "enabled": true,
+      "log_dir": "./logs/tensorboard"
+    }
+  },
+  "validation": {
+    "enabled": true,
+    "eval_interval": 1000,
+    "eval_samples": 4000,
+    "metrics": [
+      "loss",
+      "perplexity"
+    ]
+  }
+}
