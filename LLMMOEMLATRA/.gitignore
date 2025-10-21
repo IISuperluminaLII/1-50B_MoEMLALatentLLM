@@ -29,6 +29,7 @@ env/
 # IDEs
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -43,8 +44,8 @@ checkpoints_*/
 logs/
 *.log
 
-# Data
-data/
+# Data - only ignore data directory at root, not src/data or configs/data
+/data/
 *.pt
 *.pth
 *.bin

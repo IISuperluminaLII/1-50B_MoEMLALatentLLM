@@ -90,8 +90,8 @@ python scripts/generate_configs.py
 - RoPE positional encoding
 
 ✅ **Dolma Dataset** (3T tokens)
-- 13 pre-cleaned data sources
-- Configurable domain mixing
+- Pre-mixed from 6 main source categories
+- Pre-cleaned and optimally weighted
 - Automatic data loading
 
 ✅ **Production Features**
@@ -145,29 +145,22 @@ Edit config file to adjust model dimensions:
 }
 ```
 
-### Change Data Mix
+### Change Dataset Version
 
-Edit config file:
+Edit config file to use different Dolma versions:
 ```json
 {
   "data": {
-    "sources": [
-      {
-        "name": "common_crawl",
-        "subset": "dolma_v1_6_cc",
-        "weight": 0.5,         // 50% from Common Crawl
-        "description": "Web data"
-      },
-      {
-        "name": "starcoder",
-        "subset": "dolma_v1_6_starcoder",
-        "weight": 0.5,         // 50% from code
-        "description": "GitHub code"
-      }
-    ]
+    "version": "v1_7",    // Latest version (default)
+    // Or use: "v1_6", "v1_5", "v1"
+    // For testing: "v1_6-sample", "v1_5-sample"
   }
 }
 ```
+
+Note: Dolma is pre-mixed from 6 sources (Common Crawl, GitHub, Reddit,
+Semantic Scholar, Project Gutenberg, Wikipedia). Custom mixing would
+require processing raw Dolma files directly.
 
 ### Change Training Settings
 
@@ -249,7 +242,7 @@ python -c "import deepspeed; print(deepspeed.__version__)"
 1. **Fixed all critical bugs** (92/100 confidence)
 2. **Fragmented architecture** - mixes dense and MoE layers
 3. **Efficient routing** - 100x faster than naive implementation
-4. **Dolma integration** - 3T tokens, pre-cleaned, 13 sources
+4. **Dolma integration** - 3T tokens, pre-cleaned, pre-mixed from 6 sources
 5. **Universal launcher** - single command for any setup
 6. **DeepSpeed always enabled** - optimal memory and performance
 7. **Scalable configs** - 11 pre-tuned models from 1B to 50B
