@@ -3,6 +3,7 @@ Unit tests for configuration system.
 """
 import pytest
 import yaml
+import json
 import tempfile
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from src.config.model_config import (
     get_deepseek_v3_config,
     get_small_test_config,
 )
+from src.utils.config_loader import ConfigLoader
 
 
 class TestMLAConfig:
@@ -301,3 +303,473 @@ class TestConfigComparison:
 
         # Should be in similar range
         assert abs(small_ratio - large_ratio) < 0.1
+
+
+class TestConfigLoader:
+    """Test cases for configuration loader."""
+
+    @pytest.fixture
+    def minimal_deepspeed_config(self, temp_dir):
+        """Create a test config with minimal DeepSpeed config (only config_file)."""
+        config = {
+            "experiment_name": "test_minimal_ds",
+            "output_dir": "./outputs/test",
+            "seed": 42,
+            "model": {
+                "num_layers": 4,
+                "vocab_size": 1000,
+                "norm_type": "rmsnorm",
+                "norm_eps": 1e-6,
+                "tie_word_embeddings": False,
+                "init_method_std": 0.006,
+                "mla": {
+                    "d_model": 256,
+                    "d_latent": 64,
+                    "num_heads": 4,
+                    "num_kv_heads": 4,
+                    "use_fp8_kv": False,
+                    "max_context_length": 512,
+                    "use_flash_mla": False,
+                    "flash_mla_backend": "auto",
+                    "fallback_to_dense": True,
+                    "use_rope": True,
+                    "rope_theta": 10000.0,
+                    "sliding_window": None,
+                    "attn_dropout": 0.0
+                },
+                "moe": {
+                    "num_experts": 4,
+                    "num_experts_per_token": 2,
+                    "expert_intermediate_size": 512,
+                    "expert_dim": 512,
+                    "dropout": 0.0,
+                    "num_shared_experts": 1,
+                    "shared_intermediate_size": 512,
+                    "router_aux_loss_weight": 0.01,
+                    "router_temperature": 1.0,
+                    "router_noise_std": 0.0,
+                    "router_bias_decay": 0.99,
+                    "capacity_factor": 1.0,
+                    "use_aux_loss_free": False,
+                    "balance_loss_type": "entropy",
+                    "min_expert_capacity": 4,
+                    "use_deep_ep": False,
+                    "deep_ep_fp8": False,
+                    "deep_ep_async": False
+                }
+            },
+            "training": {
+                "global_batch_size": 8,
+                "micro_batch_size": 2,
+                "seq_length": 128,
+                "tokens_per_parameter_ratio": 20.0,
+                "total_training_tokens": None,
+                "learning_rate": 1e-4,
+                "min_learning_rate": 1e-5,
+                "lr_warmup_steps": 100,
+                "lr_decay_style": "cosine",
+                "weight_decay": 0.1,
+                "grad_clip": 1.0,
+                "use_fp16": False,
+                "use_bf16": True,
+                "use_fp8": False,
+                "use_mtp": True,
+                "num_predict_tokens": 2,
+                "mtp_tokens": 2,
+                "train_steps": 1000,
+                "eval_interval": 100,
+                "save_interval": 500,
+                "log_interval": 10,
+                "optimizer": "adamw",
+                "adam_beta1": 0.9,
+                "adam_beta2": 0.95,
+                "adam_eps": 1e-8
+            },
+            "data": {
+                "dataset_name": "test_dataset",
+                "dataset_version": "v1",
+                "cache_dir": "./data/cache",
+                "preprocessing": {"num_workers": 1, "shuffle": True},
+                "sources": [{"name": "test", "weight": 1.0}]
+            },
+            "distributed": {
+                "backend": "deepspeed",
+                "launcher": "deepspeed",
+                "tensor_parallel_size": 1,
+                "pipeline_parallel_size": 1,
+                "expert_parallel_size": 1,
+                "data_parallel_size": 1,
+                "zero_stage": 1,
+                "zero_offload": False,
+                "overlap_grad_reduce": True,
+                "overlap_param_gather": True,
+                "deepspeed": {
+                    "enabled": True,
+                    "config_file": "configs/deepspeed_config.json"
+                },
+                "slurm": {
+                    "enabled": False,
+                    "partition": "gpu",
+                    "nodes": 1,
+                    "ntasks_per_node": 1,
+                    "gpus_per_node": 1,
+                    "cpus_per_task": 4,
+                    "time": "01:00:00",
+                    "mem": "32G",
+                    "job_name": "test",
+                    "output": "logs/test.out",
+                    "error": "logs/test.err"
+                }
+            },
+            "checkpointing": {
+                "save_interval": 500,
+                "save_total_limit": 3,
+                "resume_from_checkpoint": None,
+                "checkpoint_format": "deepspeed",
+                "save_optimizer_states": True
+            },
+            "logging": {
+                "log_interval": 10,
+                "wandb": {"enabled": False, "project": "test", "entity": None, "name": None, "tags": []},
+                "tensorboard": {"enabled": True, "log_dir": "./logs"}
+            },
+            "validation": {
+                "enabled": True,
+                "eval_interval": 100,
+                "eval_samples": 100,
+                "metrics": ["loss", "perplexity"]
+            }
+        }
+
+        config_path = temp_dir / "test_config_minimal_ds.json"
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        return config_path
+
+    @pytest.fixture
+    def full_deepspeed_config(self, temp_dir):
+        """Create a test config with full DeepSpeed config (all nested keys)."""
+        config = {
+            "experiment_name": "test_full_ds",
+            "output_dir": "./outputs/test",
+            "seed": 42,
+            "model": {
+                "num_layers": 4,
+                "vocab_size": 1000,
+                "norm_type": "rmsnorm",
+                "norm_eps": 1e-6,
+                "tie_word_embeddings": False,
+                "init_method_std": 0.006,
+                "mla": {
+                    "d_model": 256,
+                    "d_latent": 64,
+                    "num_heads": 4,
+                    "num_kv_heads": 4,
+                    "use_fp8_kv": False,
+                    "max_context_length": 512,
+                    "use_flash_mla": False,
+                    "flash_mla_backend": "auto",
+                    "fallback_to_dense": True,
+                    "use_rope": True,
+                    "rope_theta": 10000.0,
+                    "sliding_window": None,
+                    "attn_dropout": 0.0
+                },
+                "moe": {
+                    "num_experts": 4,
+                    "num_experts_per_token": 2,
+                    "expert_intermediate_size": 512,
+                    "expert_dim": 512,
+                    "dropout": 0.0,
+                    "num_shared_experts": 1,
+                    "shared_intermediate_size": 512,
+                    "router_aux_loss_weight": 0.01,
+                    "router_temperature": 1.0,
+                    "router_noise_std": 0.0,
+                    "router_bias_decay": 0.99,
+                    "capacity_factor": 1.0,
+                    "use_aux_loss_free": False,
+                    "balance_loss_type": "entropy",
+                    "min_expert_capacity": 4,
+                    "use_deep_ep": False,
+                    "deep_ep_fp8": False,
+                    "deep_ep_async": False
+                }
+            },
+            "training": {
+                "global_batch_size": 8,
+                "micro_batch_size": 2,
+                "seq_length": 128,
+                "tokens_per_parameter_ratio": 20.0,
+                "total_training_tokens": None,
+                "learning_rate": 1e-4,
+                "min_learning_rate": 1e-5,
+                "lr_warmup_steps": 100,
+                "lr_decay_style": "cosine",
+                "weight_decay": 0.1,
+                "grad_clip": 1.0,
+                "use_fp16": False,
+                "use_bf16": True,
+                "use_fp8": False,
+                "use_mtp": True,
+                "num_predict_tokens": 2,
+                "mtp_tokens": 2,
+                "train_steps": 1000,
+                "eval_interval": 100,
+                "save_interval": 500,
+                "log_interval": 10,
+                "optimizer": "adamw",
+                "adam_beta1": 0.9,
+                "adam_beta2": 0.95,
+                "adam_eps": 1e-8
+            },
+            "data": {
+                "dataset_name": "test_dataset",
+                "dataset_version": "v1",
+                "cache_dir": "./data/cache",
+                "preprocessing": {"num_workers": 1, "shuffle": True},
+                "sources": [{"name": "test", "weight": 1.0}]
+            },
+            "distributed": {
+                "backend": "deepspeed",
+                "launcher": "deepspeed",
+                "tensor_parallel_size": 1,
+                "pipeline_parallel_size": 1,
+                "expert_parallel_size": 1,
+                "data_parallel_size": 1,
+                "zero_stage": 1,
+                "zero_offload": False,
+                "overlap_grad_reduce": True,
+                "overlap_param_gather": True,
+                "deepspeed": {
+                    "enabled": True,
+                    "zero_optimization": {
+                        "stage": 1,
+                        "overlap_comm": True
+                    },
+                    "gradient_accumulation_steps": 4,
+                    "bf16": {"enabled": True},
+                    "fp16": {"enabled": False}
+                },
+                "slurm": {
+                    "enabled": False,
+                    "partition": "gpu",
+                    "nodes": 1,
+                    "ntasks_per_node": 1,
+                    "gpus_per_node": 1,
+                    "cpus_per_task": 4,
+                    "time": "01:00:00",
+                    "mem": "32G",
+                    "job_name": "test",
+                    "output": "logs/test.out",
+                    "error": "logs/test.err"
+                }
+            },
+            "checkpointing": {
+                "save_interval": 500,
+                "save_total_limit": 3,
+                "resume_from_checkpoint": None,
+                "checkpoint_format": "deepspeed",
+                "save_optimizer_states": True
+            },
+            "logging": {
+                "log_interval": 10,
+                "wandb": {"enabled": False, "project": "test", "entity": None, "name": None, "tags": []},
+                "tensorboard": {"enabled": True, "log_dir": "./logs"}
+            },
+            "validation": {
+                "enabled": True,
+                "eval_interval": 100,
+                "eval_samples": 100,
+                "metrics": ["loss", "perplexity"]
+            }
+        }
+
+        config_path = temp_dir / "test_config_full_ds.json"
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        return config_path
+
+    def test_load_minimal_deepspeed_config(self, minimal_deepspeed_config, capfd):
+        """Test loading config with minimal DeepSpeed configuration."""
+        loader = ConfigLoader()
+
+        # Should not raise KeyError
+        config = loader.load(str(minimal_deepspeed_config))
+
+        # Verify config loaded successfully
+        assert config.experiment_name == "test_minimal_ds"
+        assert config.distributed_config.deepspeed["enabled"] is True
+        assert "config_file" in config.distributed_config.deepspeed
+
+        # Verify output mentions the config file
+        captured = capfd.readouterr()
+        assert "DeepSpeed Configuration" in captured.out
+        assert "Config File:" in captured.out
+        assert "configs/deepspeed_config.json" in captured.out
+
+    def test_load_full_deepspeed_config(self, full_deepspeed_config, capfd):
+        """Test loading config with full DeepSpeed configuration."""
+        loader = ConfigLoader()
+
+        # Should not raise KeyError
+        config = loader.load(str(full_deepspeed_config))
+
+        # Verify config loaded successfully
+        assert config.experiment_name == "test_full_ds"
+        assert config.distributed_config.deepspeed["enabled"] is True
+        assert "zero_optimization" in config.distributed_config.deepspeed
+
+        # Verify output shows DeepSpeed details
+        captured = capfd.readouterr()
+        assert "DeepSpeed Configuration" in captured.out
+        assert "ZeRO Stage: 1" in captured.out
+        assert "Gradient Accumulation: 4" in captured.out
+        assert "BF16: True" in captured.out
+        assert "FP16: False" in captured.out
+
+    def test_load_deepspeed_disabled(self, temp_dir, capfd):
+        """Test loading config with DeepSpeed disabled."""
+        config_dict = {
+            "experiment_name": "test_no_ds",
+            "output_dir": "./outputs/test",
+            "seed": 42,
+            "model": {
+                "num_layers": 4,
+                "vocab_size": 1000,
+                "norm_type": "rmsnorm",
+                "norm_eps": 1e-6,
+                "tie_word_embeddings": False,
+                "init_method_std": 0.006,
+                "mla": {
+                    "d_model": 256,
+                    "d_latent": 64,
+                    "num_heads": 4,
+                    "num_kv_heads": 4,
+                    "use_fp8_kv": False,
+                    "max_context_length": 512,
+                    "use_flash_mla": False,
+                    "flash_mla_backend": "auto",
+                    "fallback_to_dense": True,
+                    "use_rope": True,
+                    "rope_theta": 10000.0,
+                    "sliding_window": None,
+                    "attn_dropout": 0.0
+                },
+                "moe": {
+                    "num_experts": 4,
+                    "num_experts_per_token": 2,
+                    "expert_intermediate_size": 512,
+                    "expert_dim": 512,
+                    "dropout": 0.0,
+                    "num_shared_experts": 1,
+                    "shared_intermediate_size": 512,
+                    "router_aux_loss_weight": 0.01,
+                    "router_temperature": 1.0,
+                    "router_noise_std": 0.0,
+                    "router_bias_decay": 0.99,
+                    "capacity_factor": 1.0,
+                    "use_aux_loss_free": False,
+                    "balance_loss_type": "entropy",
+                    "min_expert_capacity": 4,
+                    "use_deep_ep": False,
+                    "deep_ep_fp8": False,
+                    "deep_ep_async": False
+                }
+            },
+            "training": {
+                "global_batch_size": 8,
+                "micro_batch_size": 2,
+                "seq_length": 128,
+                "tokens_per_parameter_ratio": 20.0,
+                "total_training_tokens": None,
+                "learning_rate": 1e-4,
+                "min_learning_rate": 1e-5,
+                "lr_warmup_steps": 100,
+                "lr_decay_style": "cosine",
+                "weight_decay": 0.1,
+                "grad_clip": 1.0,
+                "use_fp16": False,
+                "use_bf16": True,
+                "use_fp8": False,
+                "use_mtp": True,
+                "num_predict_tokens": 2,
+                "mtp_tokens": 2,
+                "train_steps": 1000,
+                "eval_interval": 100,
+                "save_interval": 500,
+                "log_interval": 10,
+                "optimizer": "adamw",
+                "adam_beta1": 0.9,
+                "adam_beta2": 0.95,
+                "adam_eps": 1e-8
+            },
+            "data": {
+                "dataset_name": "test_dataset",
+                "dataset_version": "v1",
+                "cache_dir": "./data/cache",
+                "preprocessing": {"num_workers": 1, "shuffle": True},
+                "sources": [{"name": "test", "weight": 1.0}]
+            },
+            "distributed": {
+                "backend": "nccl",
+                "launcher": "torchrun",
+                "tensor_parallel_size": 1,
+                "pipeline_parallel_size": 1,
+                "expert_parallel_size": 1,
+                "data_parallel_size": 1,
+                "zero_stage": 0,
+                "zero_offload": False,
+                "overlap_grad_reduce": False,
+                "overlap_param_gather": False,
+                "deepspeed": {"enabled": False},
+                "slurm": {
+                    "enabled": False,
+                    "partition": "gpu",
+                    "nodes": 1,
+                    "ntasks_per_node": 1,
+                    "gpus_per_node": 1,
+                    "cpus_per_task": 4,
+                    "time": "01:00:00",
+                    "mem": "32G",
+                    "job_name": "test",
+                    "output": "logs/test.out",
+                    "error": "logs/test.err"
+                }
+            },
+            "checkpointing": {
+                "save_interval": 500,
+                "save_total_limit": 3,
+                "resume_from_checkpoint": None,
+                "checkpoint_format": "pytorch",
+                "save_optimizer_states": True
+            },
+            "logging": {
+                "log_interval": 10,
+                "wandb": {"enabled": False, "project": "test", "entity": None, "name": None, "tags": []},
+                "tensorboard": {"enabled": True, "log_dir": "./logs"}
+            },
+            "validation": {
+                "enabled": True,
+                "eval_interval": 100,
+                "eval_samples": 100,
+                "metrics": ["loss", "perplexity"]
+            }
+        }
+
+        config_path = temp_dir / "test_config_no_ds.json"
+        with open(config_path, 'w') as f:
+            json.dump(config_dict, f, indent=2)
+
+        loader = ConfigLoader()
+        config = loader.load(str(config_path))
+
+        # Verify config loaded successfully
+        assert config.experiment_name == "test_no_ds"
+        assert config.distributed_config.deepspeed["enabled"] is False
+
+        # Verify DeepSpeed section not in output
+        captured = capfd.readouterr()
+        assert "DeepSpeed Configuration" not in captured.out

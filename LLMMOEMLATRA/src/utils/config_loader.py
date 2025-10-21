@@ -242,10 +242,22 @@ class ConfigLoader:
         if config.distributed_config.deepspeed["enabled"]:
             ds = config.distributed_config.deepspeed
             print(f"\nDeepSpeed Configuration:")
-            print(f"  ZeRO Stage: {ds['zero_optimization']['stage']}")
-            print(f"  Gradient Accumulation: {ds['gradient_accumulation_steps']}")
-            print(f"  BF16: {ds['bf16']['enabled']}")
-            print(f"  FP16: {ds['fp16']['enabled']}")
+
+            # Check if this is a minimal config (only config_file) or full config
+            if "config_file" in ds and len(ds) == 2:  # enabled + config_file
+                print(f"  Config File: {ds['config_file']}")
+            elif "zero_optimization" in ds:
+                # Full config with nested keys
+                print(f"  ZeRO Stage: {ds['zero_optimization']['stage']}")
+                if "gradient_accumulation_steps" in ds:
+                    print(f"  Gradient Accumulation: {ds['gradient_accumulation_steps']}")
+                if "bf16" in ds:
+                    print(f"  BF16: {ds['bf16']['enabled']}")
+                if "fp16" in ds:
+                    print(f"  FP16: {ds['fp16']['enabled']}")
+            else:
+                # Partial config - print what's available
+                print(f"  Config keys: {', '.join(k for k in ds.keys() if k != 'enabled')}")
 
         print(f"\n{'='*80}\n")
 
