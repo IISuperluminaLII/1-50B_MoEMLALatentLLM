@@ -213,7 +213,8 @@ class DeepSeekV3Model(nn.Module):
 
         # Heads: Next-token LM head + MTP
         self.lm_head = nn.Linear(d_model, config.vocab_size, bias=False)
-        self.mtp_head = MTPHead(d_model, config.vocab_size, mtp_tokens=self.mtp_tokens)
+        # Pass the shared token embedding layer to MTP head for sequential conditioning
+        self.mtp_head = MTPHead(d_model, config.vocab_size, mtp_tokens=self.mtp_tokens, embedding_layer=self.token_embed)
 
     def forward(
         self,
@@ -324,6 +325,6 @@ class DeepSeekV3Model(nn.Module):
         output.loss = total_loss
         output.past_key_values = present_key_values  # For inference caching
         output.load_balancing_loss = moe_load_balancing_loss  # MoE aux loss
-        output.expert_metrics = moe_expert_metrics_per_layer  # Per-layer expert stats
+        output.moe_metrics = moe_expert_metrics_per_layer  # Per-layer expert stats (renamed for trainer compatibility)
 
         return output

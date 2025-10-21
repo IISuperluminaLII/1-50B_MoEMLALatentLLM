@@ -82,11 +82,15 @@ class MTPHead(nn.Module):
     - DeepSeek-V3: https://arxiv.org/abs/2412.19437
     - Gloeckle et al.: https://arxiv.org/abs/2404.19737
     """
-    def __init__(self, d_model, vocab_size, mtp_tokens=2, num_heads=8, dropout=0.0):
+    def __init__(self, d_model, vocab_size, mtp_tokens=2, num_heads=8, dropout=0.0, embedding_layer=None):
         super().__init__()
         self.mtp_tokens = mtp_tokens
         self.d_model = d_model
         self.vocab_size = vocab_size
+
+        # Store reference to shared embedding layer for sequential prediction
+        # If not provided, create a new one (for backward compatibility)
+        self.embedding = embedding_layer if embedding_layer is not None else nn.Embedding(vocab_size, d_model)
 
         # Shared output head (used across all prediction depths)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
@@ -99,11 +103,11 @@ class MTPHead(nn.Module):
 
     def forward(self, hidden, embeddings=None, mtp_labels=None):
         """
-        Multi-token prediction forward pass.
+        Multi-token prediction forward pass with sequential conditioning.
 
         Args:
             hidden: [batch, seq_len, d_model] - hidden states from main model
-            embeddings: Embedding layer for sequential prediction (optional)
+            embeddings: Embedding layer for sequential prediction (optional, deprecated)
             mtp_labels: [batch, seq_len, mtp_tokens] - future tokens to predict
 
         Returns:
@@ -118,12 +122,39 @@ class MTPHead(nn.Module):
         # Current hidden state
         current_hidden = hidden
 
-        # Sequential prediction through MTP modules
+        # Sequential prediction through MTP modules with causal conditioning
         for depth in range(self.mtp_tokens):
-            # Pass through MTP module
-            # In full implementation, would use next token embeddings
-            # For now, just refine hidden states
-            current_hidden = self.mtp_modules[depth](current_hidden)
+            # Get next token embeddings for conditioning
+            next_token_emb = None
+
+            if depth > 0:
+                # Use predicted tokens from previous depth for conditioning
+                prev_logits = all_logits[-1]  # [batch, seq_len, vocab_size]
+
+                # During training with teacher forcing, use ground truth if available
+                if mtp_labels is not None and self.training:
+                    # Use ground truth tokens from mtp_labels
+                    # At depth d, we predict token at position i+d+1
+                    if depth < mtp_labels.size(2):
+                        # Get the tokens at depth-1 (what we just predicted)
+                        teacher_tokens = mtp_labels[:, :, depth-1]  # [batch, seq_len]
+                        # Mask invalid positions
+                        valid_mask = teacher_tokens != -100
+                        # Embed the tokens
+                        next_token_emb = self.embedding(teacher_tokens.clamp(min=0))  # [batch, seq_len, d_model]
+                        # Zero out invalid positions
+                        next_token_emb = next_token_emb * valid_mask.unsqueeze(-1)
+                else:
+                    # During inference, use argmax of previous predictions
+                    predicted_tokens = prev_logits.argmax(dim=-1)  # [batch, seq_len]
+                    next_token_emb = self.embedding(predicted_tokens)  # [batch, seq_len, d_model]
+
+                    # Optionally stop gradients for inference-like behavior during training
+                    if self.training:
+                        next_token_emb = next_token_emb.detach()
+
+            # Pass through MTP module with sequential conditioning
+            current_hidden = self.mtp_modules[depth](current_hidden, next_token_emb)
 
             # Predict next token using shared output head
             depth_logits = self.lm_head(current_hidden)  # [batch, seq_len, vocab_size]

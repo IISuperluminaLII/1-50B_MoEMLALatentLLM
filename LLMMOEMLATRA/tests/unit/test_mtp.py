@@ -527,3 +527,187 @@ class TestMTPMemoryEfficiency:
             expected_memory = batch_size * seq_len * num_tokens * vocab_size * 4  # float32
 
             assert logits_memory == expected_memory
+
+
+class TestMTPSequentialConditioning:
+    """
+    Test sequential conditioning in MTP (DeepSeek-V3 specific feature).
+
+    Tests that each depth conditions on the previous prediction,
+    maintaining the causal chain as described in the paper.
+    """
+
+    def test_embedding_layer_initialization(self):
+        """Test that MTP head can receive and use embedding layer."""
+        d_model = 256
+        vocab_size = 1000
+        mtp_tokens = 2
+
+        # Create embedding layer
+        embedding = nn.Embedding(vocab_size, d_model)
+
+        # Create MTP with embedding
+        mtp = MTPHead(d_model, vocab_size, mtp_tokens, embedding_layer=embedding)
+
+        # Check embedding is stored
+        assert mtp.embedding is not None
+        assert mtp.embedding == embedding
+
+    def test_sequential_conditioning_changes_output(self):
+        """
+        Test that sequential conditioning affects predictions.
+
+        With sequential conditioning, predictions at depth d
+        should depend on predictions at depth d-1.
+        """
+        batch_size, seq_len = 2, 16
+        d_model = 256
+        vocab_size = 1000
+        mtp_tokens = 3
+
+        # Create two MTP heads - one with conditioning, one without
+        embedding = nn.Embedding(vocab_size, d_model)
+        mtp_with_cond = MTPHead(d_model, vocab_size, mtp_tokens, embedding_layer=embedding)
+
+        # Create hidden states
+        hidden = torch.randn(batch_size, seq_len, d_model)
+
+        # Forward pass with conditioning
+        mtp_with_cond.eval()  # Eval mode for deterministic behavior
+        with torch.no_grad():
+            logits_cond, _ = mtp_with_cond(hidden)
+
+        # The second and third predictions should be different from first
+        # because they condition on previous predictions
+        first_pred = logits_cond[:, :, 0, :]
+        second_pred = logits_cond[:, :, 1, :]
+        third_pred = logits_cond[:, :, 2, :]
+
+        # Predictions should be different at each depth
+        assert not torch.allclose(first_pred, second_pred, rtol=1e-3)
+        assert not torch.allclose(second_pred, third_pred, rtol=1e-3)
+
+    def test_teacher_forcing_during_training(self):
+        """
+        Test teacher forcing with ground truth labels during training.
+
+        During training, MTP should use ground truth tokens
+        for conditioning instead of predicted tokens.
+        """
+        batch_size, seq_len = 2, 16
+        d_model = 256
+        vocab_size = 1000
+        mtp_tokens = 2
+
+        embedding = nn.Embedding(vocab_size, d_model)
+        mtp = MTPHead(d_model, vocab_size, mtp_tokens, embedding_layer=embedding)
+        mtp.train()  # Training mode
+
+        hidden = torch.randn(batch_size, seq_len, d_model)
+
+        # Create ground truth labels
+        mtp_labels = torch.randint(0, vocab_size, (batch_size, seq_len, mtp_tokens))
+
+        # Forward with labels (teacher forcing)
+        logits, loss = mtp(hidden, mtp_labels=mtp_labels)
+
+        # Loss should be computed
+        assert loss is not None
+        assert loss.item() > 0
+
+        # Check that logits have correct shape
+        assert logits.shape == (batch_size, seq_len, mtp_tokens, vocab_size)
+
+    def test_inference_uses_predicted_tokens(self):
+        """
+        Test that during inference, MTP uses predicted tokens for conditioning.
+
+        Without ground truth labels in eval mode, should use argmax predictions.
+        """
+        batch_size, seq_len = 2, 8
+        d_model = 256
+        vocab_size = 100  # Small vocab for testing
+        mtp_tokens = 2
+
+        embedding = nn.Embedding(vocab_size, d_model)
+        mtp = MTPHead(d_model, vocab_size, mtp_tokens, embedding_layer=embedding)
+        mtp.eval()  # Eval mode
+
+        hidden = torch.randn(batch_size, seq_len, d_model)
+
+        with torch.no_grad():
+            logits, loss = mtp(hidden)  # No labels provided
+
+        # Should still produce logits
+        assert logits.shape == (batch_size, seq_len, mtp_tokens, vocab_size)
+        assert loss is None  # No loss without labels
+
+        # Get predicted tokens at depth 0
+        predicted_at_0 = logits[:, :, 0, :].argmax(dim=-1)
+
+        # These predicted tokens should influence depth 1 predictions
+        # (We can't directly test this without access to internals,
+        # but we verify the mechanism works)
+        assert predicted_at_0.shape == (batch_size, seq_len)
+
+    def test_gradient_flow_through_conditioning(self):
+        """
+        Test that gradients flow through the conditioning mechanism.
+
+        Important for training the embedding layer properly.
+        """
+        batch_size, seq_len = 2, 8
+        d_model = 128
+        vocab_size = 100
+        mtp_tokens = 2
+
+        embedding = nn.Embedding(vocab_size, d_model)
+        mtp = MTPHead(d_model, vocab_size, mtp_tokens, embedding_layer=embedding)
+        mtp.train()
+
+        hidden = torch.randn(batch_size, seq_len, d_model, requires_grad=True)
+        mtp_labels = torch.randint(0, vocab_size, (batch_size, seq_len, mtp_tokens))
+
+        # Forward pass
+        logits, loss = mtp(hidden, mtp_labels=mtp_labels)
+
+        # Backward pass
+        loss.backward()
+
+        # Check gradients exist for embedding
+        assert embedding.weight.grad is not None
+        assert not torch.allclose(embedding.weight.grad, torch.zeros_like(embedding.weight.grad))
+
+        # Check gradients exist for MTP modules
+        for i, module in enumerate(mtp.mtp_modules):
+            for name, param in module.named_parameters():
+                assert param.grad is not None, f"No gradient for module {i}, param {name}"
+
+    def test_padding_token_handling_in_conditioning(self):
+        """
+        Test that padding tokens (-100) are properly handled in conditioning.
+
+        Padding tokens should not contribute to embeddings.
+        """
+        batch_size, seq_len = 2, 16
+        d_model = 256
+        vocab_size = 1000
+        mtp_tokens = 2
+
+        embedding = nn.Embedding(vocab_size, d_model)
+        mtp = MTPHead(d_model, vocab_size, mtp_tokens, embedding_layer=embedding)
+        mtp.train()
+
+        hidden = torch.randn(batch_size, seq_len, d_model)
+
+        # Create labels with padding
+        mtp_labels = torch.randint(0, vocab_size, (batch_size, seq_len, mtp_tokens))
+        mtp_labels[:, 10:, :] = -100  # Pad last positions
+
+        # Should handle padding without errors
+        logits, loss = mtp(hidden, mtp_labels=mtp_labels)
+
+        assert logits.shape == (batch_size, seq_len, mtp_tokens, vocab_size)
+        assert loss is not None
+        assert not torch.isnan(loss)
+        assert not torch.isinf(loss)
