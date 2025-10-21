@@ -58,6 +58,13 @@ class MultiHeadLatentAttention(nn.Module):
         self.d_latent = d_latent
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads
+
+        # Validate dimensions
+        if d_latent >= d_model:
+            raise ValueError(f"d_latent ({d_latent}) must be < d_model ({d_model})")
+        if d_model % num_heads != 0:
+            raise ValueError(f"d_model ({d_model}) must be divisible by num_heads ({num_heads})")
+
         self.head_dim = d_model // num_heads
         self.use_fp8_kv = use_fp8_kv
         self.use_flash_mla = use_flash_mla and FLASH_MLA_AVAILABLE
@@ -157,31 +164,52 @@ class MultiHeadLatentAttention(nn.Module):
         k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
 
-        # Apply RoPE
-        if position_ids is None:
-            position_ids = torch.arange(seq_len, device=hidden_states.device).unsqueeze(0)
-
-        q, k = self._apply_rope(q, k, position_ids)
-
-        # Handle KV cache
+        # Handle KV cache first
+        past_seq_len = 0
         if past_key_value is not None:
             past_k_latent, past_v_latent = past_key_value
+            # Cast back from FP8 to compute dtype if needed
+            compute_dtype = hidden_states.dtype
+            if hasattr(torch, 'float8_e4m3fn'):
+                if past_k_latent.dtype == torch.float8_e4m3fn:
+                    past_k_latent = past_k_latent.to(compute_dtype)
+                if past_v_latent.dtype == torch.float8_e4m3fn:
+                    past_v_latent = past_v_latent.to(compute_dtype)
             # Expand past latents
             past_k = self.k_expand(past_k_latent)
             past_v = self.v_expand(past_v_latent)
             past_k = past_k.view(batch_size, -1, self.num_kv_heads, self.head_dim)
             past_v = past_v.view(batch_size, -1, self.num_kv_heads, self.head_dim)
+            past_seq_len = past_k.size(1)
 
             k = torch.cat([past_k, k], dim=1)
             v = torch.cat([past_v, v], dim=1)
 
-            # Update latent cache
-            if use_cache:
-                kv_latent = torch.cat([past_k_latent, kv_latent], dim=1)
+        # Apply RoPE after concatenation with correct position IDs
+        if position_ids is None:
+            # For Q: use positions for the new tokens only
+            q_position_ids = torch.arange(past_seq_len, past_seq_len + seq_len, device=hidden_states.device).unsqueeze(0).expand(batch_size, -1)
+            # For K: use positions for all tokens (past + current)
+            k_position_ids = torch.arange(k.size(1), device=hidden_states.device).unsqueeze(0).expand(batch_size, -1)
+        else:
+            q_position_ids = position_ids
+            k_position_ids = torch.arange(k.size(1), device=hidden_states.device).unsqueeze(0).expand(batch_size, -1)
+
+        # Apply RoPE with appropriate position ranges
+        q, _ = self._apply_rope(q, q, q_position_ids)
+        _, k = self._apply_rope(k, k, k_position_ids)
+
+        # Update latent cache - ensure matching dtypes for concatenation
+        if past_key_value is not None and use_cache:
+            # past_k_latent is already in compute dtype from above conversion
+            kv_latent = torch.cat([past_k_latent, kv_latent], dim=1)
 
         # Optionally cast KV to FP8 for cache
         if self.use_fp8_kv and use_cache:
-            kv_latent = kv_latent.to(torch.float8_e4m3fn)
+            # Check if FP8 is supported
+            if hasattr(torch, 'float8_e4m3fn') and hidden_states.device.type == 'cuda':
+                kv_latent = kv_latent.to(torch.float8_e4m3fn)
+            # else keep in compute dtype
 
         # Attention computation
         if self.use_flash_mla and FLASH_MLA_AVAILABLE:
@@ -192,7 +220,8 @@ class MultiHeadLatentAttention(nn.Module):
             attn_output = self._standard_attention(q, k, v, attention_mask)
 
         # Reshape and project output
-        attn_output = attn_output.view(batch_size, seq_len, -1)
+        # attn_output is [batch, seq_len, num_heads, head_dim]
+        attn_output = attn_output.reshape(batch_size, seq_len, -1)
         hidden_states = self.o_proj(attn_output)
 
         # Prepare output

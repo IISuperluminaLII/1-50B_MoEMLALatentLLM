@@ -129,6 +129,13 @@ class MLAAttention(nn.Module):
         # Handle KV cache for inference
         if past_key_value is not None:
             past_k_latent, past_v_latent = past_key_value
+            # Cast back from FP8 to compute dtype if needed
+            compute_dtype = x.dtype
+            if hasattr(torch, 'float8_e4m3fn'):
+                if past_k_latent.dtype == torch.float8_e4m3fn:
+                    past_k_latent = past_k_latent.to(compute_dtype)
+                if past_v_latent.dtype == torch.float8_e4m3fn:
+                    past_v_latent = past_v_latent.to(compute_dtype)
             # Expand past latents
             past_k = self.k_expand(past_k_latent).view(-1, batch_size, self.num_heads, self.head_dim)
             past_v = self.v_expand(past_v_latent).view(-1, batch_size, self.num_heads, self.head_dim)
@@ -137,8 +144,9 @@ class MLAAttention(nn.Module):
             k = torch.cat([past_k, k], dim=0)
             v = torch.cat([past_v, v], dim=0)
 
-            # Update latent cache
+            # Update latent cache - ensure matching dtypes for concatenation
             if use_cache:
+                # past_k_latent is already in compute dtype from above conversion
                 kv_latent = torch.cat([past_k_latent, kv_latent], dim=0)
 
         # Optionally cast KV latent to FP8 for cache (memory optimization)

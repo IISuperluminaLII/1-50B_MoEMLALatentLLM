@@ -52,7 +52,7 @@ class TestMultiHeadLatentAttention:
 
         output = mla(hidden_states)
 
-        assert isinstance(output, MLAOutput)
+        assert isinstance(output, WrapperMLAOutput)
         assert output.hidden_states.shape == (batch_size, seq_len, small_mla_config.d_model)
 
     def test_forward_with_cache(self, small_mla_config, device):
@@ -111,8 +111,8 @@ class TestMultiHeadLatentAttention:
         hidden_states = torch.randn(batch_size, seq_len, small_mla_config.d_model, device=device)
 
         # Different position IDs should produce different outputs
-        pos_ids_1 = torch.arange(seq_len, device=device).unsqueeze(0)
-        pos_ids_2 = torch.arange(seq_len, device=device).unsqueeze(0) + 10
+        pos_ids_1 = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
+        pos_ids_2 = (torch.arange(seq_len, device=device).unsqueeze(0) + 10).expand(batch_size, -1)
 
         output1 = mla(hidden_states, position_ids=pos_ids_1)
         output2 = mla(hidden_states, position_ids=pos_ids_2)
@@ -233,6 +233,44 @@ class TestMultiHeadLatentAttention:
             kv_latent, _ = output.kv_cache
             # FP8 tensors should have specific dtype
             assert kv_latent.dtype == torch.float8_e4m3fn
+
+    def test_fp8_kv_cache_consecutive_forward(self, small_mla_config, device):
+        """Test consecutive forward passes with FP8 KV cache."""
+        if device.type != "cuda" or not hasattr(torch, 'float8_e4m3fn'):
+            pytest.skip("FP8 not supported on this device")
+
+        mla = MultiHeadLatentAttention(
+            d_model=small_mla_config.d_model,
+            d_latent=small_mla_config.d_latent,
+            num_heads=small_mla_config.num_heads,
+            use_fp8_kv=True,
+            use_flash_mla=False,
+        ).to(device)
+
+        batch_size, seq_len = 2, 8
+
+        # First forward pass - create FP8 cache
+        hidden_states_1 = torch.randn(batch_size, seq_len, small_mla_config.d_model, device=device)
+        output_1 = mla(hidden_states_1, use_cache=True)
+
+        assert output_1.kv_cache is not None
+        kv_latent_1, _ = output_1.kv_cache
+        assert kv_latent_1.dtype == torch.float8_e4m3fn
+
+        # Second forward pass - use FP8 cache (this would fail without dtype conversion)
+        hidden_states_2 = torch.randn(batch_size, 4, small_mla_config.d_model, device=device)
+        output_2 = mla(hidden_states_2, past_key_value=output_1.kv_cache, use_cache=True)
+
+        # Should complete without dtype errors
+        assert output_2.hidden_states.shape == (batch_size, 4, small_mla_config.d_model)
+        assert torch.all(torch.isfinite(output_2.hidden_states))
+
+        # Third forward pass - chain caching
+        hidden_states_3 = torch.randn(batch_size, 2, small_mla_config.d_model, device=device)
+        output_3 = mla(hidden_states_3, past_key_value=output_2.kv_cache, use_cache=True)
+
+        assert output_3.hidden_states.shape == (batch_size, 2, small_mla_config.d_model)
+        assert torch.all(torch.isfinite(output_3.hidden_states))
 
 
 class TestMLAAttention:
@@ -361,6 +399,42 @@ class TestMLAAttention:
                 num_heads=8,
                 d_latent=512,  # Larger than d_model
             )
+
+    def test_fp8_kv_cache_consecutive_forward(self, small_mla_config, device):
+        """Test consecutive forward passes with FP8 KV cache for MLAAttention."""
+        if device.type != "cuda" or not hasattr(torch, 'float8_e4m3fn'):
+            pytest.skip("FP8 not supported on this device")
+
+        mla = MLAAttention(
+            d_model=small_mla_config.d_model,
+            num_heads=small_mla_config.num_heads,
+            d_latent=small_mla_config.d_latent,
+            use_fp8_kv=True,
+        ).to(device)
+
+        seq_len, batch_size = 8, 2
+
+        # First forward pass - create FP8 cache
+        hidden_states_1 = torch.randn(seq_len, batch_size, small_mla_config.d_model, device=device)
+        output_1 = mla(hidden_states_1, use_cache=True)
+
+        assert output_1.kv_cache is not None
+        kv_latent_1, _ = output_1.kv_cache
+        if kv_latent_1.dtype == torch.float8_e4m3fn:  # FP8 is applied
+            # Second forward pass - use FP8 cache (this would fail without dtype conversion)
+            hidden_states_2 = torch.randn(4, batch_size, small_mla_config.d_model, device=device)
+            output_2 = mla(hidden_states_2, past_key_value=output_1.kv_cache, use_cache=True)
+
+            # Should complete without dtype errors
+            assert output_2.hidden_states.shape == (4, batch_size, small_mla_config.d_model)
+            assert torch.all(torch.isfinite(output_2.hidden_states))
+
+            # Third forward pass - chain caching
+            hidden_states_3 = torch.randn(2, batch_size, small_mla_config.d_model, device=device)
+            output_3 = mla(hidden_states_3, past_key_value=output_2.kv_cache, use_cache=True)
+
+            assert output_3.hidden_states.shape == (2, batch_size, small_mla_config.d_model)
+            assert torch.all(torch.isfinite(output_3.hidden_states))
 
 
 class TestDeepSeekV3ModelMLAIntegration:

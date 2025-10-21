@@ -5,7 +5,8 @@
       "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest tests/unit/test_mtp.py -v --tb=no)",
       "Bash(mkdir:*)",
       "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest \"C:\\PyCharmProjectsSpaceConflict\\150BLLM\\LLMMOEMLATRA\\tests\\integration\\test_training_loop.py::TestTrainingLoop::test_basic_training_loop\" -v --tb=short)",
-      "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest \"C:\\PyCharmProjectsSpaceConflict\\150BLLM\\LLMMOEMLATRA\\tests\\integration\\test_training_loop.py::TestTrainingLoop::test_basic_training_loop\" -v --tb=line)"
+      "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest \"C:\\PyCharmProjectsSpaceConflict\\150BLLM\\LLMMOEMLATRA\\tests\\integration\\test_training_loop.py::TestTrainingLoop::test_basic_training_loop\" -v --tb=line)",
+      "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest tests/unit/test_mla.py::TestMultiHeadLatentAttention::test_fp8_kv_cache_consecutive_forward -v --tb=short)"
     ],
     "deny": [],
     "ask": []
