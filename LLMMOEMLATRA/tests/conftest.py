@@ -92,6 +92,61 @@ def small_model_config(
 
 
 @pytest.fixture
+def cpu_training_config():
+    """CPU-optimized training configuration for ~100M parameter model."""
+    return DeepSeekV3Config(
+        mla=MLAConfig(
+            d_model=768,  # Increased from 512
+            d_latent=192,  # Increased from 128
+            num_heads=12,  # Increased from 8
+            num_kv_heads=12,
+            use_fp8_kv=False,
+            max_context_length=512,
+            use_flash_mla=False,  # Disable Flash for CPU
+            attn_dropout=0.1,
+        ),
+        moe=MoEConfig(
+            num_experts=8,  # Increased from 4
+            num_experts_per_token=2,
+            expert_intermediate_size=2048,  # Increased from 1024
+            router_aux_loss_weight=0.01,
+            use_deep_ep=False,  # Disable DeepEP for CPU
+            use_aux_loss_free=False,
+            dropout=0.1,
+        ),
+        parallel=ParallelConfig(
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            expert_parallel_size=1,
+            data_parallel_size=1,
+            zero_stage=0,
+        ),
+        training=TrainingConfig(
+            global_batch_size=4,
+            micro_batch_size=2,
+            seq_length=64,
+            learning_rate=1e-4,
+            min_learning_rate=1e-5,
+            lr_warmup_steps=5,
+            train_steps=10,  # Very short for testing
+            eval_interval=5,
+            save_interval=5,
+            log_interval=2,
+            use_fp16=False,
+            use_bf16=False,
+            use_fp8=False,
+            use_mtp=True,
+            num_predict_tokens=2,
+            grad_clip=1.0,
+        ),
+        num_layers=4,  # 4 layers for ~100M params
+        vocab_size=8000,  # Moderate vocab size
+        norm_type="rmsnorm",
+        norm_eps=1e-6,
+    )
+
+
+@pytest.fixture
 def temp_dir():
     """Temporary directory for test outputs."""
     with tempfile.TemporaryDirectory() as tmpdir:

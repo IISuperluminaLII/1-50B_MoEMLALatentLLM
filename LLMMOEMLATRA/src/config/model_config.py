@@ -264,15 +264,15 @@ class DeepSeekV3Config:
         EPSILON = 0.01  # Tolerance for floating point comparison
 
         if MIN_RATIO - EPSILON <= actual_ratio <= MAX_RATIO + EPSILON:
-            return True, f"✓ Chinchilla-optimal: {actual_ratio:.1f} tokens/param (within [{MIN_RATIO}, {MAX_RATIO}])"
+            return True, f"[OK] Chinchilla-optimal: {actual_ratio:.1f} tokens/param (within [{MIN_RATIO}, {MAX_RATIO}])"
 
         elif actual_ratio < MIN_RATIO - EPSILON:
-            msg = f"⚠ Under-training: {actual_ratio:.1f} tokens/param (below {MIN_RATIO})\n"
+            msg = f"[WARNING] Under-training: {actual_ratio:.1f} tokens/param (below {MIN_RATIO})\n"
             msg += f"  Recommend: {self.compute_optimal_tokens(MIN_RATIO) / 1e9:.1f}B tokens minimum"
             return not strict, msg
 
         else:  # actual_ratio > MAX_RATIO
-            msg = f"ℹ Over-training: {actual_ratio:.1f} tokens/param (above {MAX_RATIO})\n"
+            msg = f"[INFO] Over-training: {actual_ratio:.1f} tokens/param (above {MAX_RATIO})\n"
             msg += f"  This may improve quality but is compute-inefficient.\n"
             msg += f"  Optimal range: {self.compute_optimal_tokens(MIN_RATIO) / 1e9:.1f}B - {self.compute_optimal_tokens(MAX_RATIO) / 1e9:.1f}B tokens"
             return True, msg  # Over-training is allowed

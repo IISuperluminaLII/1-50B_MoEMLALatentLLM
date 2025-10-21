@@ -72,6 +72,9 @@ class DeepSeekV3Trainer:
         # MoE-specific tracking
         self.moe_metrics_buffer = []
 
+        # Determine device from model
+        self.device = next(model.parameters()).device
+
     def train(self):
         """Main training loop."""
         self.log(f"Starting training for {self.config.training.train_steps} steps")
@@ -120,7 +123,7 @@ class DeepSeekV3Trainer:
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """Single training step."""
         # Move batch to device
-        batch = {k: v.cuda() if torch.is_tensor(v) else v for k, v in batch.items()}
+        batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()}
 
         # Forward pass
         outputs = self.model(**batch)
@@ -183,7 +186,7 @@ class DeepSeekV3Trainer:
 
         with torch.no_grad():
             for batch in self.val_dataloader:
-                batch = {k: v.cuda() if torch.is_tensor(v) else v for k, v in batch.items()}
+                batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()}
                 outputs = self.model(**batch)
                 total_loss += outputs.loss.item()
                 total_batches += 1
