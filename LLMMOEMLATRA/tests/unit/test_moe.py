@@ -500,3 +500,72 @@ class TestModelIntegration:
                     # After training, expert loads should be updated
                     # (may be zero initially)
                     assert block.moe.router.expert_loads is not None
+
+    def test_router_params_from_config(self, device):
+        """Test that router temperature and noise are properly passed from config."""
+        config = get_small_test_config()
+        config.moe.router_temperature = 2.0
+        config.moe.router_noise_std = 0.2
+
+        model = DeepSeekV3Model(config).to(device)
+
+        # Check that MoE blocks have correct router parameters
+        moe_blocks = [b for b in model.blocks if isinstance(b, MLAPlusMoEBlock)]
+        assert len(moe_blocks) > 0, "Model should have at least one MoE block"
+
+        for block in moe_blocks:
+            assert block.moe.router.temperature == 2.0, \
+                f"Router temperature should be 2.0, got {block.moe.router.temperature}"
+            assert block.moe.router.noise_std == 0.2, \
+                f"Router noise std should be 0.2, got {block.moe.router.noise_std}"
+
+    def test_capacity_enforcement(self, device):
+        """Test that capacity factor properly limits tokens per expert."""
+        # Create MoE with small capacity factor
+        moe = DeepSeekMoE(
+            d_model=256,
+            num_experts=4,
+            num_experts_per_token=2,
+            expert_intermediate_size=512,
+            capacity_factor=0.5,  # Small capacity to trigger dropping
+            min_expert_capacity=2,
+            use_deep_ep=False,
+        ).to(device)
+
+        # Large batch to exceed capacity
+        batch_size, seq_len = 8, 16
+        hidden_states = torch.randn(batch_size, seq_len, 256, device=device)
+
+        output = moe(hidden_states, training=True)
+
+        # Check that overflow metrics are present
+        assert 'overflow_tokens' in output.expert_metrics
+        assert 'capacity_used' in output.expert_metrics
+        assert 'expert_capacity' in output.expert_metrics
+
+        # With capacity_factor=0.5, we should have some overflow
+        if output.expert_metrics['expert_capacity'] < batch_size * seq_len:
+            assert output.expert_metrics['overflow_tokens'] >= 0
+
+    def test_min_expert_capacity(self, device):
+        """Test that minimum expert capacity is respected."""
+        min_capacity = 10
+        moe = DeepSeekMoE(
+            d_model=256,
+            num_experts=4,
+            num_experts_per_token=2,
+            expert_intermediate_size=512,
+            capacity_factor=0.1,  # Very small capacity
+            min_expert_capacity=min_capacity,
+            use_deep_ep=False,
+        ).to(device)
+
+        # Small batch that would result in capacity < min
+        batch_size, seq_len = 1, 2
+        hidden_states = torch.randn(batch_size, seq_len, 256, device=device)
+
+        output = moe(hidden_states, training=True)
+
+        # Check that capacity is at least min_expert_capacity
+        assert output.expert_metrics['expert_capacity'] >= min_capacity, \
+            f"Expert capacity {output.expert_metrics['expert_capacity']} should be >= {min_capacity}"

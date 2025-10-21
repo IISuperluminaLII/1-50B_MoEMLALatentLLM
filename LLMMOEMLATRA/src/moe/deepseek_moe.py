@@ -235,6 +235,9 @@ class DeepSeekMoE(nn.Module):
         use_aux_loss_free: bool = False,
         use_deep_ep: bool = True,
         router_bias_decay: float = 0.99,
+        router_temperature: float = 1.0,
+        router_noise_std: float = 0.1,
+        min_expert_capacity: int = 4,
     ):
         super().__init__()
 
@@ -242,6 +245,7 @@ class DeepSeekMoE(nn.Module):
         self.num_experts = num_experts
         self.num_experts_per_token = num_experts_per_token
         self.capacity_factor = capacity_factor
+        self.min_expert_capacity = min_expert_capacity
         self.use_deep_ep = use_deep_ep and DEEP_EP_AVAILABLE
 
         # Router
@@ -252,6 +256,8 @@ class DeepSeekMoE(nn.Module):
             aux_loss_weight=aux_loss_weight,
             use_aux_loss_free=use_aux_loss_free,
             router_bias_decay=router_bias_decay,
+            router_temperature=router_temperature,
+            router_noise_std=router_noise_std,
         )
 
         # Expert FFNs
@@ -288,6 +294,9 @@ class DeepSeekMoE(nn.Module):
         """
         batch_size, seq_len, d_model = hidden_states.size()
         batch_seq = batch_size * seq_len
+
+        # Set expert capacity based on current batch
+        self.set_expert_capacity(batch_size, seq_len)
 
         # Flatten to [batch * seq, d_model]
         flat_hidden = hidden_states.view(batch_seq, d_model)
@@ -339,12 +348,15 @@ class DeepSeekMoE(nn.Module):
         expert_indices: torch.Tensor,
         expert_weights: torch.Tensor,
     ) -> torch.Tensor:
-        """Standard MoE forward (no DeepEP)."""
+        """Standard MoE forward (no DeepEP) with capacity enforcement."""
         batch_seq, d_model = hidden_states.size()
         top_k = expert_indices.size(1)
 
         # Initialize output
         output = torch.zeros_like(hidden_states)
+
+        # Track tokens dropped due to capacity constraints
+        tokens_dropped = 0
 
         # Process each expert
         for expert_idx in range(self.num_experts):
@@ -354,20 +366,50 @@ class DeepSeekMoE(nn.Module):
             if not expert_mask.any():
                 continue
 
-            # Get tokens and weights for this expert
+            # Collect all tokens for this expert across all k positions
+            # and enforce capacity limit
+            expert_token_indices = []
+            expert_token_weights = []
+
             for k in range(top_k):
                 token_mask = expert_mask[:, k]
                 if not token_mask.any():
                     continue
 
-                tokens = hidden_states[token_mask]
-                weights = expert_weights[token_mask, k:k+1]
+                # Get indices of tokens assigned to this expert at position k
+                token_indices = torch.where(token_mask)[0]
+                token_weights = expert_weights[token_mask, k:k+1]
 
-                # Run expert
+                expert_token_indices.append(token_indices)
+                expert_token_weights.append(token_weights)
+
+            if not expert_token_indices:
+                continue
+
+            # Concatenate all tokens for this expert
+            all_token_indices = torch.cat(expert_token_indices)
+            all_token_weights = torch.cat(expert_token_weights)
+
+            # Apply capacity constraint
+            if self.expert_capacity is not None and len(all_token_indices) > self.expert_capacity:
+                # Sort by weights and keep only top capacity tokens
+                sorted_idx = torch.argsort(all_token_weights.squeeze(), descending=True)
+                keep_idx = sorted_idx[:self.expert_capacity]
+                tokens_dropped += len(all_token_indices) - self.expert_capacity
+
+                all_token_indices = all_token_indices[keep_idx]
+                all_token_weights = all_token_weights[keep_idx]
+
+            # Process tokens through expert
+            if len(all_token_indices) > 0:
+                tokens = hidden_states[all_token_indices]
                 expert_out = self.experts[expert_idx](tokens)
 
                 # Add weighted output
-                output[token_mask] += expert_out * weights
+                output[all_token_indices] += expert_out * all_token_weights
+
+        # Store overflow info for metrics
+        self._overflow_tokens = tokens_dropped
 
         return output
 
@@ -433,16 +475,30 @@ class DeepSeekMoE(nn.Module):
         std_load = expert_counts.std()
         load_imbalance = (std_load / (mean_load + 1e-8)).item()
 
+        # Add overflow metrics if capacity was enforced
+        overflow_tokens = getattr(self, '_overflow_tokens', 0)
+        capacity_used = 0.0
+        if self.expert_capacity is not None:
+            max_possible_capacity = self.expert_capacity * self.num_experts
+            actual_tokens_processed = batch_seq - overflow_tokens
+            capacity_used = actual_tokens_processed / max_possible_capacity if max_possible_capacity > 0 else 0.0
+
         return {
             "expert_counts": expert_counts.cpu().tolist(),
             "entropy": entropy,
             "utilization": utilization,
             "load_imbalance": load_imbalance,
             "num_used_experts": num_used_experts,
+            "overflow_tokens": overflow_tokens,
+            "capacity_used": capacity_used,
+            "expert_capacity": self.expert_capacity,
         }
 
     def set_expert_capacity(self, batch_size: int, seq_len: int):
         """Set expert capacity based on batch size."""
         total_tokens = batch_size * seq_len
         avg_tokens_per_expert = (total_tokens * self.num_experts_per_token) / self.num_experts
-        self.expert_capacity = int(avg_tokens_per_expert * self.capacity_factor)
+        self.expert_capacity = max(
+            int(avg_tokens_per_expert * self.capacity_factor),
+            self.min_expert_capacity
+        )
