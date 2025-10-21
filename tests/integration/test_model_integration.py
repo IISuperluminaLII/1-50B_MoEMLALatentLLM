@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from src.mla.flash_mla_wrapper import MultiHeadLatentAttention
-from src.moe.deepseek_moe import DeepSeekMoE
+from src.moe.deepseek_moe import DeepSeekMoE, MoEOutput
 from src.config.model_config import get_small_test_config
 
 
@@ -45,10 +45,12 @@ class TestMLAMoEIntegration:
         moe_output = moe(mla_output.hidden_states)
 
         # Should produce valid output with MoEOutput structure
-        assert isinstance(moe_output, type(moe_output))  # MoEOutput type
+        assert isinstance(moe_output, MoEOutput), f"Expected MoEOutput, got {type(moe_output)}"
         assert moe_output.hidden_states.shape == (batch_size, seq_len, config.mla.d_model)
         assert moe_output.router_logits is not None
         assert moe_output.expert_metrics is not None
+        # Verify load_balancing_loss field exists (may be None depending on config)
+        assert hasattr(moe_output, 'load_balancing_loss')
 
         # Backward pass
         loss = moe_output.hidden_states.sum()
