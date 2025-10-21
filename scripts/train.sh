@@ -4,7 +4,7 @@
 set -e
 
 # Configuration
-CONFIG_FILE="${1:-configs/deepseek_v3_base.yaml}"
+CONFIG_FILE="${1:-configs/deepseek_v3_1b.json}"
 NUM_GPUS="${NUM_GPUS:-8}"
 NUM_NODES="${NUM_NODES:-1}"
 MASTER_ADDR="${MASTER_ADDR:-localhost}"

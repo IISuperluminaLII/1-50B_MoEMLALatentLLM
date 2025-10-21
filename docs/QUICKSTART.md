@@ -33,12 +33,11 @@ Test on small model with 2 GPUs:
 
 ```bash
 # Edit config for 2 GPUs
-# configs/deepseek_v3_small.yaml:
-# parallel:
-#   tensor_parallel_size: 2
+# configs/deepseek_v3_1b.json:
+# "distributed": { "tensor_parallel_size": 2 }
 
 # Run training
-./scripts/train.sh configs/deepseek_v3_small.yaml
+python scripts/run_training.py --config configs/deepseek_v3_1b.json --gpus 2
 ```
 
 You should see:
@@ -52,33 +51,32 @@ Step 10/10000 | Loss: 10.5234 | LR: 3.00e-05 | Steps/sec: 2.34
 
 ### 1. Prepare Configuration
 
-Copy and edit the base config:
+Copy and edit a base config:
 
 ```bash
-cp configs/deepseek_v3_base.yaml configs/my_config.yaml
+cp configs/deepseek_v3_1b.json configs/my_config.json
 ```
 
 Key settings to adjust:
 
-```yaml
-# configs/my_config.yaml
-
-# Match your GPU count
-parallel:
-  tensor_parallel_size: 4      # Adjust
-  pipeline_parallel_size: 4    # Adjust
-  expert_parallel_size: 2      # Adjust
-
-# Your data paths
-data:
-  train_data_path: "/path/to/your/data"
-  val_data_path: "/path/to/your/val"
-
-# Logging
-logging:
-  output_dir: "./outputs"
-  use_wandb: true
-  wandb_project: "my-deepseek-v3"
+```json
+{
+  "distributed": {
+    "tensor_parallel_size": 4,
+    "pipeline_parallel_size": 4,
+    "expert_parallel_size": 2
+  },
+  "data": {
+    "dataset_name": "allenai/dolma",
+    "dataset_version": "v1_7"
+  },
+  "logging": {
+    "wandb": {
+      "enabled": true,
+      "project": "my-deepseek-v3"
+    }
+  }
+}
 ```
 
 ### 2. Prepare Data
@@ -103,27 +101,19 @@ def create_dataloaders(config, rank, world_size):
 **Single node (8 GPUs):**
 
 ```bash
-./scripts/train.sh configs/my_config.yaml
+python scripts/run_training.py --config configs/my_config.json --gpus 8
 ```
 
 **Multi-node (SLURM):**
 
 ```bash
-sbatch scripts/train_slurm.sh configs/my_config.yaml
+python scripts/run_training.py --config configs/my_config.json --submit
 ```
 
-**Multi-node (Manual):**
+**Manual DeepSpeed launch:**
 
 ```bash
-# Node 0 (master)
-export MASTER_ADDR=node0
-export MASTER_PORT=6000
-./scripts/train.sh configs/my_config.yaml
-
-# Node 1
-export MASTER_ADDR=node0
-export MASTER_PORT=6000
-./scripts/train.sh configs/my_config.yaml
+deepspeed --num_gpus=8 src/training/train.py --config configs/my_config.json --deepspeed
 ```
 
 ## Monitoring
@@ -138,11 +128,16 @@ tensorboard --logdir outputs/tensorboard
 
 Set in config:
 
-```yaml
-logging:
-  use_wandb: true
-  wandb_project: "deepseek-v3"
-  wandb_entity: "your-team"
+```json
+{
+  "logging": {
+    "wandb": {
+      "enabled": true,
+      "project": "deepseek-v3",
+      "entity": "your-team"
+    }
+  }
+}
 ```
 
 ### Logs
@@ -175,55 +170,53 @@ tail -f outputs/train.log
 
 ### Out of Memory
 
-```yaml
-# Reduce batch size
-training:
-  micro_batch_size: 1
-
-# Enable gradient checkpointing
-# (Add to model config)
+Reduce batch size in config:
+```json
+{"training": {"micro_batch_size": 1}}
 ```
 
 ### Slow Training
 
-```yaml
-# Check parallelism is balanced
-parallel:
-  # Ensure: TP × PP × EP × DP = num_gpus
-
-# Enable optimizations
-training:
-  use_fp8: true
-
-model:
-  mla:
-    use_fp8_kv: true
-  moe:
-    use_deep_ep: true
+Check parallelism is balanced in config:
+```json
+{
+  "distributed": {
+    "tensor_parallel_size": 2,
+    "pipeline_parallel_size": 2
+  },
+  "training": {"use_fp8": true},
+  "model": {
+    "mla": {"use_fp8_kv": true},
+    "moe": {"use_deep_ep": true}
+  }
+}
 ```
 
 ### Router Collapse (All tokens to few experts)
 
-```yaml
-moe:
-  router_aux_loss_weight: 0.01  # Increase from 0
-  router_noise_std: 0.1         # Add noise
-  use_aux_loss_free: false      # Disable if unstable
+Adjust MoE settings:
+```json
+{
+  "model": {
+    "moe": {
+      "router_aux_loss_weight": 0.01,
+      "router_noise_std": 0.1,
+      "use_aux_loss_free": false
+    }
+  }
+}
 ```
 
 ## Common Commands
 
 ```bash
 # Resume from checkpoint
-./scripts/train.sh configs/my_config.yaml --resume checkpoints/checkpoint_step_10000.pt
-
-# Evaluate only
-python src/training/train.py --config configs/my_config.yaml --eval_only
+python scripts/run_training.py --config configs/my_config.json --resume checkpoints/checkpoint_step_10000.pt
 
 # Check config
-python -c "from src.config.model_config import load_config; \
-           c = load_config('configs/my_config.yaml'); \
-           c.print_summary()"
+python -c "from src.utils.config_loader import load_config; \
+           c = load_config('configs/my_config.json'); \
+           print(c)"
 ```
 
 ## Next Steps
@@ -246,22 +239,20 @@ python -c "from src.config.model_config import load_config; \
 ./scripts/build_kernels.sh
 
 # 2. Configure
-cp configs/deepseek_v3_base.yaml configs/my_config.yaml
-# Edit my_config.yaml: set paths, adjust parallelism
+cp configs/deepseek_v3_1b.json configs/my_config.json
+# Edit my_config.json: set paths, adjust parallelism
 
 # 3. Verify
 python scripts/verify_installation.py
-python -c "from src.config.model_config import load_config; \
-           load_config('configs/my_config.yaml').print_summary()"
 
 # 4. Test small
-./scripts/train.sh configs/deepseek_v3_small.yaml
+python scripts/run_training.py --config configs/deepseek_v3_1b.json --gpus 2
 
 # 5. Launch production
-./scripts/train.sh configs/my_config.yaml
+python scripts/run_training.py --config configs/my_config.json --gpus 8
 
 # 6. Monitor
-tensorboard --logdir outputs/tensorboard
+tensorboard --logdir logs/tensorboard
 tail -f outputs/train.log
 ```
 

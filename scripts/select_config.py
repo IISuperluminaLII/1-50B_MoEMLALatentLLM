@@ -13,7 +13,7 @@ from pathlib import Path
 CONFIGS = {
     "1b": {
         "name": "1B Model",
-        "file": "configs/deepseek_v3_1b.yaml",
+        "file": "configs/deepseek_v3_1b.json",
         "params_total": "~1.0B",
         "params_active": "~300M",
         "min_gpus": 1,
@@ -24,7 +24,7 @@ CONFIGS = {
     },
     "5b": {
         "name": "5B Model",
-        "file": "configs/deepseek_v3_5b.yaml",
+        "file": "configs/deepseek_v3_5b.json",
         "params_total": "~5.0B",
         "params_active": "~1.5B",
         "min_gpus": 4,
@@ -35,7 +35,7 @@ CONFIGS = {
     },
     "10b": {
         "name": "10B Model",
-        "file": "configs/deepseek_v3_10b.yaml",
+        "file": "configs/deepseek_v3_10b.json",
         "params_total": "~10B",
         "params_active": "~3B",
         "min_gpus": 8,
@@ -46,7 +46,7 @@ CONFIGS = {
     },
     "15b": {
         "name": "15B Model",
-        "file": "configs/deepseek_v3_15b.yaml",
+        "file": "configs/deepseek_v3_15b.json",
         "params_total": "~15B",
         "params_active": "~4.5B",
         "min_gpus": 16,
@@ -57,7 +57,7 @@ CONFIGS = {
     },
     "20b": {
         "name": "20B Model",
-        "file": "configs/deepseek_v3_20b.yaml",
+        "file": "configs/deepseek_v3_20b.json",
         "params_total": "~20B",
         "params_active": "~6B",
         "min_gpus": 24,
@@ -68,7 +68,7 @@ CONFIGS = {
     },
     "671b": {
         "name": "671B Model (Full DeepSeek-V3)",
-        "file": "configs/deepseek_v3_base.yaml",
+        "file": "configs/deepseek_v3_50b.json",
         "params_total": "~671B",
         "params_active": "~37B",
         "min_gpus": 32,
@@ -218,7 +218,7 @@ def interactive_mode():
         print(f"  Config file: {config_file}")
         print()
         print("To use this configuration:")
-        print(f"  ./scripts/train.sh {config_file}")
+        print(f"  python scripts/run_training.py --config {config_file}")
         print("=" * 80)
 
         return config_file
