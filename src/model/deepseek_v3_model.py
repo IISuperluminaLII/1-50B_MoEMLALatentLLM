@@ -246,8 +246,31 @@ class DeepSeekV3Model(nn.Module):
         hidden = self.token_embed(input_ids)
         hidden = hidden.transpose(0, 1)  # [seq_len, batch, d_model]
 
-        # Build causal mask
-        causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1)
+        # Build causal mask - need to account for cached sequence length
+        if past_key_values is not None:
+            # When using cache, we need to know the past sequence length
+            # Get it from the first layer's cache (all layers have same cache length)
+            past_kv_first = past_key_values[0]
+            if past_kv_first is not None:
+                # past_kv is (k_latent, v_latent) where shape is [past_seq_len, batch, d_latent]
+                past_seq_len = past_kv_first[0].shape[0]
+                full_seq_len = past_seq_len + seq_len
+
+                # Create a causal mask that allows current queries to attend to all past tokens
+                # and causally to current tokens
+                # Shape: [seq_len, full_seq_len] where seq_len is query length, full_seq_len is key length
+                causal_mask = torch.zeros(seq_len, full_seq_len, device=device, dtype=torch.bool)
+                # Mask out future tokens in the current sequence
+                causal_mask[:, past_seq_len:] = torch.triu(
+                    torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1
+                )
+            else:
+                # Fallback to standard causal mask if cache is empty
+                causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1)
+        else:
+            # No cache - standard causal mask for current sequence
+            causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1)
+
         key_padding_mask = None
         if attention_mask is not None:
             # attention_mask: 1=keep, 0=pad -> transform to bool
