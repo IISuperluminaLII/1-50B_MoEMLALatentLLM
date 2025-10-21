@@ -1,11 +1,12 @@
 """
-Unit tests for Multi-head Latent Attention (MLA).
+Unit tests for Multi-head Latent Attention (MLA) and RMSNorm.
 """
 import pytest
 import torch
+import math
 
 from src.mla.flash_mla_wrapper import MultiHeadLatentAttention, MLAOutput as WrapperMLAOutput
-from src.model.mla import MLAAttention, MLAOutput
+from src.model.mla import MLAAttention, MLAOutput, RMSNorm
 from src.model.deepseek_v3_model import DeepSeekV3Model
 
 
@@ -429,3 +430,153 @@ class TestDeepSeekV3ModelMLAIntegration:
             assert mla.d_latent == small_model_config.mla.d_latent
             assert mla.use_fp8_kv == small_model_config.mla.use_fp8_kv
             assert mla.max_context_length == small_model_config.mla.max_context_length
+
+
+class TestRMSNorm:
+    """Test cases for RMSNorm implementation to ensure it follows the DeepSeek-V3 specification."""
+
+    def test_initialization(self):
+        """Test RMSNorm module initialization."""
+        dimension = 256
+        norm = RMSNorm(dimension)
+
+        assert norm.weight.shape == (dimension,)
+        assert torch.all(norm.weight == 1.0), "Weights should be initialized to 1"
+        assert norm.eps == 1e-5
+
+    def test_rms_normalization_formula(self, device):
+        """Test that RMSNorm correctly computes x / sqrt(mean(x^2) + eps)."""
+        dimension = 128
+        norm = RMSNorm(dimension).to(device)
+
+        # Create test input
+        batch_size, seq_len = 2, 8
+        x = torch.randn(batch_size, seq_len, dimension, device=device)
+
+        # Compute expected output manually
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        expected_output = x / torch.sqrt(variance + norm.eps)
+        expected_output = expected_output * norm.weight  # Apply learned weight
+
+        # Get actual output
+        actual_output = norm(x)
+
+        # Check outputs match
+        torch.testing.assert_close(actual_output, expected_output, rtol=1e-5, atol=1e-6)
+
+    def test_different_input_shapes(self, device):
+        """Test RMSNorm with different input shapes."""
+        dimension = 64
+        norm = RMSNorm(dimension).to(device)
+
+        # Test 2D input [batch, dimension]
+        x_2d = torch.randn(16, dimension, device=device)
+        out_2d = norm(x_2d)
+        assert out_2d.shape == x_2d.shape
+
+        # Test 3D input [batch, seq, dimension]
+        x_3d = torch.randn(4, 10, dimension, device=device)
+        out_3d = norm(x_3d)
+        assert out_3d.shape == x_3d.shape
+
+        # Test 4D input [batch, seq, heads, dimension]
+        x_4d = torch.randn(2, 8, 4, dimension, device=device)
+        out_4d = norm(x_4d)
+        assert out_4d.shape == x_4d.shape
+
+    def test_gradient_flow(self, device):
+        """Test that gradients flow properly through RMSNorm."""
+        dimension = 128
+        norm = RMSNorm(dimension).to(device)
+
+        x = torch.randn(2, 8, dimension, device=device, requires_grad=True)
+
+        output = norm(x)
+        loss = output.sum()
+        loss.backward()
+
+        # Check gradients exist
+        assert x.grad is not None
+        assert norm.weight.grad is not None
+        assert not torch.allclose(x.grad, torch.zeros_like(x.grad))
+
+    def test_numerical_stability(self, device):
+        """Test RMSNorm numerical stability with edge cases."""
+        dimension = 64
+        norm = RMSNorm(dimension, eps=1e-6).to(device)
+
+        # Test with very small values (near zero)
+        x_small = torch.full((2, 4, dimension), 1e-8, device=device)
+        out_small = norm(x_small)
+        assert torch.all(torch.isfinite(out_small)), "Should handle small values"
+
+        # Test with very large values
+        x_large = torch.full((2, 4, dimension), 1e8, device=device)
+        out_large = norm(x_large)
+        assert torch.all(torch.isfinite(out_large)), "Should handle large values"
+
+        # Test with mixed magnitudes
+        x_mixed = torch.randn(2, 4, dimension, device=device)
+        x_mixed[:, :, :dimension//2] *= 1e6
+        x_mixed[:, :, dimension//2:] *= 1e-6
+        out_mixed = norm(x_mixed)
+        assert torch.all(torch.isfinite(out_mixed)), "Should handle mixed magnitudes"
+
+    def test_compare_to_incorrect_l2_norm(self, device):
+        """Test that RMSNorm is different from L2 normalization."""
+        dimension = 128
+        norm = RMSNorm(dimension).to(device)
+
+        x = torch.randn(2, 8, dimension, device=device)
+
+        # Correct RMS normalization
+        rms_output = norm(x)
+
+        # Incorrect L2 normalization (what the code had before)
+        l2_norm = x.norm(2, dim=-1, keepdim=True)
+        l2_output = (x / (l2_norm + norm.eps)) * norm.weight
+
+        # Outputs should be different
+        assert not torch.allclose(rms_output, l2_output, rtol=1e-3), \
+            "RMS normalization should differ from L2 normalization"
+
+        # RMS norm should scale by √d compared to L2 norm
+        # Check this relationship approximately holds
+        d = dimension
+        scale_ratio = (rms_output / l2_output).mean().item()
+        expected_ratio = math.sqrt(d)
+        assert abs(scale_ratio - expected_ratio) / expected_ratio < 0.1, \
+            f"Scale ratio {scale_ratio:.2f} should be close to √{d} = {expected_ratio:.2f}"
+
+    @pytest.mark.parametrize("dimension", [64, 128, 256, 512, 1024])
+    def test_different_dimensions(self, dimension, device):
+        """Test RMSNorm with different model dimensions."""
+        norm = RMSNorm(dimension).to(device)
+
+        x = torch.randn(4, 16, dimension, device=device)
+        output = norm(x)
+
+        assert output.shape == x.shape
+
+        # Verify normalization property: RMS of normalized output should be ~1
+        rms_values = output.pow(2).mean(dim=-1).sqrt()
+        # The RMS should be close to 1 (within reasonable tolerance)
+        assert torch.allclose(rms_values, torch.ones_like(rms_values), rtol=0.1)
+
+    def test_weight_learning(self, device):
+        """Test that the weight parameter can be learned."""
+        dimension = 64
+        norm = RMSNorm(dimension).to(device)
+
+        # Set custom weights
+        custom_weight = torch.randn(dimension, device=device)
+        norm.weight.data = custom_weight
+
+        x = torch.randn(2, 8, dimension, device=device)
+        output = norm(x)
+
+        # Verify weights were applied
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        expected = (x / torch.sqrt(variance + norm.eps)) * custom_weight
+
+        torch.testing.assert_close(output, expected, rtol=1e-5, atol=1e-6)

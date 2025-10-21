@@ -13,8 +13,10 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         # x shape: [..., dimension]
-        norm = x.norm(2, dim=-1, keepdim=True)
-        return (x / (norm + self.eps)) * self.weight
+        # Compute RMS normalization: x / sqrt(mean(x^2) + eps)
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        rms_norm = torch.sqrt(variance + self.eps)
+        return (x / rms_norm) * self.weight
 
 class MLAOutput:
     """Output from MLA forward pass."""
