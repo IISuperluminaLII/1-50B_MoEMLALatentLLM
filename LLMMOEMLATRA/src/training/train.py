@@ -167,11 +167,12 @@ def create_dataloaders(config: DeepSeekV3Config, rank: int, world_size: int):
     """
     Create training and validation dataloaders using Dolma dataset.
 
-    Loads data from Allen AI's pre-cleaned Dolma dataset with 13 sources
-    and configurable domain mixing weights.
+    Loads data from Allen AI's pre-cleaned, pre-mixed Dolma dataset (~3T tokens).
+    Dolma is optimally composed from diverse sources including Common Crawl,
+    GitHub, Reddit, Semantic Scholar, Project Gutenberg, and Wikipedia.
     """
     from transformers import AutoTokenizer
-    from src.data.dolma_loader import DolmaSource, DolmaDataset
+    from src.data.dolma_loader import DolmaDataset
     from torch.utils.data import DataLoader
 
     # Initialize tokenizer - Use official DeepSeek-V3 tokenizer
@@ -190,96 +191,14 @@ def create_dataloaders(config: DeepSeekV3Config, rank: int, world_size: int):
             print("DeepSeek tokenizers not available, using LLaMA-2 tokenizer as fallback")
             tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
 
-    # Define Dolma data sources with recommended weights from the paper
-    sources = [
-        DolmaSource(
-            name="common_crawl",
-            subset="dolma_v1_6_cc",
-            weight=0.35,
-            description="Common Crawl web data via Dolma v1.6 - diverse web content"
-        ),
-        DolmaSource(
-            name="starcoder",
-            subset="dolma_v1_6_starcoder",
-            weight=0.08,
-            description="Code from GitHub repositories - programming content"
-        ),
-        DolmaSource(
-            name="c4",
-            subset="dolma_v1_6_c4",
-            weight=0.12,
-            description="Colossal Clean Crawled Corpus - high-quality web text"
-        ),
-        DolmaSource(
-            name="reddit",
-            subset="dolma_v1_6_reddit",
-            weight=0.10,
-            description="PushShift Reddit API content - conversational text"
-        ),
-        DolmaSource(
-            name="pes2o",
-            subset="dolma_v1_6_pes2o",
-            weight=0.08,
-            description="Scientific papers from Semantic Scholar - academic content"
-        ),
-        DolmaSource(
-            name="refined_web",
-            subset="dolma_v1_6_refined_web",
-            weight=0.10,
-            description="Refined Web - curated high-quality web content"
-        ),
-        DolmaSource(
-            name="redpajama",
-            subset="dolma_v1_6_redpajama",
-            weight=0.05,
-            description="RedPajama v1 - open dataset for LLM training"
-        ),
-        DolmaSource(
-            name="flan",
-            subset="dolma_v1_6_flan",
-            weight=0.03,
-            description="Flan Collection - instruction tuning data"
-        ),
-        DolmaSource(
-            name="openwebmath",
-            subset="dolma_v1_6_openwebmath",
-            weight=0.04,
-            description="Mathematical content from Proof Pile II"
-        ),
-        DolmaSource(
-            name="proof_pile_2",
-            subset="dolma_v1_6_proof_pile_2",
-            weight=0.02,
-            description="Mathematical and formal proofs"
-        ),
-        DolmaSource(
-            name="gutenberg",
-            subset="dolma_v1_6_gutenberg",
-            weight=0.01,
-            description="Project Gutenberg - public domain books"
-        ),
-        DolmaSource(
-            name="metawika",
-            subset="dolma_v1_6_metawika",
-            weight=0.01,
-            description="Wikipedia metadata and structure"
-        ),
-        DolmaSource(
-            name="wikimedia",
-            subset="dolma_v1_6_wikimedia",
-            weight=0.01,
-            description="Wikipedia and Wikimedia projects - encyclopedic content"
-        ),
-    ]
-
     # Create train dataset
     print("\n" + "="*80)
     print("Creating Training Dataset")
     print("="*80)
     train_dataset = DolmaDataset(
-        sources=sources,
         tokenizer=tokenizer,
         seq_length=config.training.seq_length,
+        version="v1_7",  # Use latest version
         cache_dir=None,  # Uses HuggingFace default cache
         split="train",
         streaming=True,  # Use streaming for large dataset
@@ -293,9 +212,9 @@ def create_dataloaders(config: DeepSeekV3Config, rank: int, world_size: int):
     print("Creating Validation Dataset")
     print("="*80)
     val_dataset = DolmaDataset(
-        sources=sources,
         tokenizer=tokenizer,
         seq_length=config.training.seq_length,
+        version="v1_7",  # Use latest version
         cache_dir=None,
         split="validation",
         streaming=True,
@@ -321,7 +240,7 @@ def create_dataloaders(config: DeepSeekV3Config, rank: int, world_size: int):
 
     print("\n" + "="*80)
     print("Dataloaders Ready!")
-    print(f"Training with {len(sources)} Dolma sources")
+    print(f"Using Dolma v1.7 (~3T tokens, pre-mixed from 6 sources)")
     print(f"Sequence length: {config.training.seq_length}")
     print(f"Micro batch size: {config.training.micro_batch_size}")
     print("="*80 + "\n")

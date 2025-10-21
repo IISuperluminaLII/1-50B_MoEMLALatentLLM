@@ -78,8 +78,8 @@ The `src/data/` package **already exists** with full implementations. The origin
 
 #### `dolma_deepseek_v3.json`
 - **Purpose**: Production training matching DeepSeek-V3 paper
-- **Sources**: All 13 Dolma v1.6 sources
-- **Weights**: Match arXiv:2412.19437 specification
+- **Sources**: Dolma v1.7 (latest) or v1.6
+- **Pre-mixed**: From 6 sources per Dolma paper (arXiv:2402.00159)
 - **Sequence Length**: 2048 tokens
 - **Batch Size**: 4 (micro), 1024 (global)
 - **Total Corpus**: ~3 trillion tokens
@@ -96,7 +96,7 @@ The `src/data/` package **already exists** with full implementations. The origin
 **Sections**:
 - Overview of Dolma integration
 - Configuration format specification
-- All 13 Dolma v1.6 sources with descriptions
+- Dolma's 6 source categories per paper
 - Usage examples (Python API, training scripts, direct dataset)
 - Multi-Token Prediction (MTP) explanation
 - Creating custom configurations (step-by-step)
@@ -120,9 +120,9 @@ The `src/data/` package **already exists** with full implementations. The origin
 
 ## Features Implemented
 
-### Dolma v1.6 Integration
-- [x] Load from 13 official Dolma sources
-- [x] Configurable domain mixing weights
+### Dolma v1.6/v1.7 Integration
+- [x] Load from Dolma pre-mixed dataset (6 source categories)
+- [x] Version selection (v1.7, v1.6, v1.5, v1)
 - [x] Automatic weight normalization
 - [x] Streaming mode for large datasets
 - [x] Shuffle with configurable seed

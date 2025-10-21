@@ -140,10 +140,12 @@ def generate_config(size_b):
 
         "data": {
             "dataset_name": "allenai/dolma",
-            "dataset_version": "v1_6",
+            "version": "v1_7",
+            "_comment_version": "Dolma v1.7 is the latest version (~3T tokens, pre-mixed from 6 source categories)",
             "cache_dir": "./data/cache",
             "chinchilla_tokens": int(size_b * 1e9 * 20),
             "_comment_chinchilla": f"Chinchilla optimal: 20 tokens per parameter for {size_b}B params = {size_b * 20}B tokens (Hoffmann et al., 2022, arXiv:2203.15556)",
+            "_comment_composition": "Dolma is pre-mixed from: Common Crawl, GitHub, Reddit, Semantic Scholar, Project Gutenberg, Wikipedia/Wikibooks",
             "preprocessing": {
                 "num_workers": min(16, model["gpus"] // 4),
                 "shuffle": True,
@@ -222,27 +224,14 @@ def generate_config(size_b):
             },
             "domain_mixer": {
                 "_comment_mixer": "DoReMi adaptive domain weighting (Xie et al., 2023) for optimal domain mixture",
-                "enabled": True,
+                "enabled": False,
+                "_comment_dolma": "Dolma is already pre-mixed optimally. Domain mixing would require raw source files, not the HuggingFace API",
                 "method": "doremi",
                 "reference_model_size": "280m",
                 "num_epochs": 1,
                 "reweight_temperature": 0.5,
                 "citation": "Xie et al. (2023). DoReMi: Optimizing Data Mixtures Speeds Up Language Model Pretraining. arXiv:2305.10429"
-            },
-            "sources": [
-                {"name": "common_crawl", "subset": "dolma_v1_6_cc", "weight": 0.30, "description": "Common Crawl - Diverse web content from broad internet crawl. Provides general knowledge and language patterns."},
-                {"name": "c4", "subset": "dolma_v1_6_c4", "weight": 0.15, "description": "Colossal Clean Crawled Corpus - High-quality filtered web text. Better quality than raw Common Crawl."},
-                {"name": "refined_web", "subset": "dolma_v1_6_refined_web", "weight": 0.12, "description": "Refined Web (Falcon) - Curated high-quality web pages. Emphasizes educational and informative content."},
-                {"name": "peS2o", "subset": "dolma_v1_6_pes2o", "weight": 0.10, "description": "Semantic Scholar Open Corpus - Academic papers and scientific literature. Enhances technical reasoning."},
-                {"name": "starcoder", "subset": "dolma_v1_6_starcoder", "weight": 0.10, "description": "StarCoder - GitHub source code across multiple languages. Improves code understanding and generation."},
-                {"name": "reddit", "subset": "dolma_v1_6_reddit", "weight": 0.08, "description": "Reddit (PushShift) - Conversational and discussion forum data. Enhances dialogue and informal language."},
-                {"name": "openwebmath", "subset": "dolma_v1_6_openwebmath", "weight": 0.06, "description": "OpenWebMath - Mathematical expressions and problems from web. Improves math reasoning capabilities."},
-                {"name": "redpajama", "subset": "dolma_v1_6_redpajama", "weight": 0.04, "description": "RedPajama v1 - Open reproduction of LLaMA training data. Diverse mixture for generalization."},
-                {"name": "flan", "subset": "dolma_v1_6_flan", "weight": 0.02, "description": "Flan Collection - Instruction-following examples. Helps with task comprehension and following directions."},
-                {"name": "proof_pile_2", "subset": "dolma_v1_6_proof_pile_2", "weight": 0.01, "description": "Proof Pile II - Formal mathematical proofs (Lean, Isabelle, etc.). Enhances logical reasoning."},
-                {"name": "wikimedia", "subset": "dolma_v1_6_wikimedia", "weight": 0.01, "description": "Wikipedia - Encyclopedic knowledge base. Provides factual grounding and structured information."},
-                {"name": "gutenberg", "subset": "dolma_v1_6_gutenberg", "weight": 0.01, "description": "Project Gutenberg - Classic literature and books. Improves narrative understanding and literary style."}
-            ]
+            }
         },
 
         "distributed": {
