@@ -3,7 +3,9 @@
     "allow": [
       "Bash(python:*)",
       "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest tests/unit/test_mtp.py -v --tb=no)",
-      "Bash(mkdir:*)"
+      "Bash(mkdir:*)",
+      "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest \"C:\\PyCharmProjectsSpaceConflict\\150BLLM\\LLMMOEMLATRA\\tests\\integration\\test_training_loop.py::TestTrainingLoop::test_basic_training_loop\" -v --tb=short)",
+      "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest \"C:\\PyCharmProjectsSpaceConflict\\150BLLM\\LLMMOEMLATRA\\tests\\integration\\test_training_loop.py::TestTrainingLoop::test_basic_training_loop\" -v --tb=line)"
     ],
     "deny": [],
     "ask": []
