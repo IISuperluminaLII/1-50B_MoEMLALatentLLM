@@ -1,0 +1,29 @@
+{
+  "data": {
+    "dataset": "allenai/dolma",
+    "version": "v1_7",
+    "_comment": "Dolma v1.7 is the latest version, pre-mixed from 6 source categories",
+    "_sources": "Common Crawl, GitHub (The Stack), Reddit, Semantic Scholar (PeS2o), Project Gutenberg, Wikipedia/Wikibooks",
+    "cache_dir": "./data/cache",
+    "preprocessing": {
+      "shuffle": true,
+      "shuffle_seed": 42,
+      "num_workers": 4
+    }
+  },
+  "training": {
+    "seq_length": 2048,
+    "micro_batch_size": 4,
+    "global_batch_size": 1024,
+    "_comment_batch": "Micro batch per GPU, global batch across all GPUs"
+  },
+  "notes": {
+    "description": "Standard Dolma v1.7 configuration for DeepSeek-V3 training",
+    "corpus_size": "~3 trillion tokens",
+    "composition": "Pre-mixed and optimally weighted by the Dolma team",
+    "custom_mixing": "For custom domain mixing, you would need to process raw Dolma files directly",
+    "versions_available": ["v1_7", "v1_6", "v1_5", "v1"],
+    "sample_versions": ["v1_6-sample", "v1_5-sample"],
+    "reference": "Soldaini et al. (2024), arXiv:2402.00159"
+  }
+}

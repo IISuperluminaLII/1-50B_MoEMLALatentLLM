@@ -1,0 +1,49 @@
+{
+  "experiment_name": "dolma_small_test",
+  "description": "Minimal Dolma configuration for testing and development",
+
+  "data": {
+    "dataset_name": "dolma",
+    "cache_dir": null,
+
+    "sources": [
+      {
+        "name": "common_crawl",
+        "subset": "dolma_v1_6_cc",
+        "weight": 0.5,
+        "description": "Common Crawl web data - diverse internet content"
+      },
+      {
+        "name": "reddit",
+        "subset": "dolma_v1_6_reddit",
+        "weight": 0.3,
+        "description": "Reddit posts - conversational text"
+      },
+      {
+        "name": "starcoder",
+        "subset": "dolma_v1_6_starcoder",
+        "weight": 0.2,
+        "description": "GitHub code repositories"
+      }
+    ],
+
+    "preprocessing": {
+      "shuffle": true,
+      "shuffle_seed": 42,
+      "num_workers": 4,
+      "max_samples_per_source": 10000
+    }
+  },
+
+  "training": {
+    "seq_length": 512,
+    "micro_batch_size": 4,
+    "global_batch_size": 32
+  },
+
+  "notes": [
+    "This is a minimal configuration for quick testing.",
+    "Uses only 3 Dolma sources with balanced weights.",
+    "Suitable for development and integration testing."
+  ]
+}
