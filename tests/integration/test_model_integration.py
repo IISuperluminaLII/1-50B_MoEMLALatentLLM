@@ -289,17 +289,21 @@ class TestConfigurationValidation:
     """Test that all provided configs are valid."""
 
     @pytest.mark.parametrize("config_file", [
-        "configs/deepseek_v3_1b.yaml",
-        "configs/deepseek_v3_5b.yaml",
-        "configs/deepseek_v3_10b.yaml",
-        "configs/deepseek_v3_15b.yaml",
-        "configs/deepseek_v3_20b.yaml",
-        "configs/deepseek_v3_base.yaml",
-        "configs/deepseek_v3_small.yaml",
+        "configs/deepseek_v3_1b.json",
+        "configs/deepseek_v3_5b.json",
+        "configs/deepseek_v3_10b.json",
+        "configs/deepseek_v3_15b.json",
+        "configs/deepseek_v3_20b.json",
+        "configs/deepseek_v3_25b.json",
+        "configs/deepseek_v3_30b.json",
+        "configs/deepseek_v3_35b.json",
+        "configs/deepseek_v3_40b.json",
+        "configs/deepseek_v3_45b.json",
+        "configs/deepseek_v3_50b.json",
     ])
     def test_config_file_loads(self, config_file):
         """Test that config files load successfully."""
-        import yaml
+        import json
         from pathlib import Path
 
         config_path = Path(config_file)
@@ -307,12 +311,12 @@ class TestConfigurationValidation:
             pytest.skip(f"Config file not found: {config_file}")
 
         with open(config_path) as f:
-            config_dict = yaml.safe_load(f)
+            config_dict = json.load(f)
 
         # Validate structure
         assert "model" in config_dict
         assert "training" in config_dict
-        assert "parallel" in config_dict
+        assert "distributed" in config_dict
 
         # Validate MLA config
         assert "mla" in config_dict["model"]
@@ -326,23 +330,23 @@ class TestConfigurationValidation:
         assert moe["num_experts_per_token"] <= moe["num_experts"]
 
     @pytest.mark.parametrize("config_name,expected_experts", [
-        ("1b", 8),
-        ("5b", 16),
-        ("10b", 32),
+        ("1b", 16),
+        ("5b", 32),
+        ("10b", 48),
         ("15b", 64),
-        ("20b", 96),
+        ("20b", 80),
     ])
     def test_config_scaling(self, config_name, expected_experts):
         """Test that configs scale properly."""
-        import yaml
+        import json
         from pathlib import Path
 
-        config_path = Path(f"configs/deepseek_v3_{config_name}.yaml")
+        config_path = Path(f"configs/deepseek_v3_{config_name}.json")
         if not config_path.exists():
             pytest.skip(f"Config not found: {config_path}")
 
         with open(config_path) as f:
-            config = yaml.safe_load(f)
+            config = json.load(f)
 
         # Check expert count matches expected scaling
         assert config["model"]["moe"]["num_experts"] == expected_experts

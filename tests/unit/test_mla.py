@@ -505,6 +505,77 @@ class TestDeepSeekV3ModelMLAIntegration:
             assert mla.use_fp8_kv == small_model_config.mla.use_fp8_kv
             assert mla.max_context_length == small_model_config.mla.max_context_length
 
+    def test_model_consecutive_forward_with_cache(self, small_model_config, device):
+        """
+        Regression test for causal mask shape mismatch during incremental decoding.
+        Tests that consecutive forward passes with past_key_values work correctly.
+        """
+        model = DeepSeekV3Model(small_model_config).to(device)
+        model.eval()  # Set to eval mode to disable dropout
+
+        batch_size = 2
+
+        # First forward pass - process initial sequence
+        initial_seq_len = 8
+        input_ids_1 = torch.randint(0, small_model_config.vocab_size, (batch_size, initial_seq_len), device=device)
+
+        with torch.no_grad():
+            output_1 = model(input_ids_1, use_cache=True)
+
+        assert hasattr(output_1, 'past_key_values')
+        assert output_1.past_key_values is not None
+        assert len(output_1.past_key_values) == small_model_config.num_layers
+        assert output_1.logits.shape == (batch_size, initial_seq_len, small_model_config.vocab_size)
+
+        # Verify cache shapes
+        for layer_cache in output_1.past_key_values:
+            if layer_cache is not None:
+                k_latent, v_latent = layer_cache
+                assert k_latent.shape == (initial_seq_len, batch_size, small_model_config.mla.d_latent)
+                assert v_latent.shape == (initial_seq_len, batch_size, small_model_config.mla.d_latent)
+
+        # Second forward pass - incremental decoding with single token
+        # This is where the bug would manifest - causal mask shape mismatch
+        new_seq_len = 1
+        input_ids_2 = torch.randint(0, small_model_config.vocab_size, (batch_size, new_seq_len), device=device)
+
+        with torch.no_grad():
+            output_2 = model(input_ids_2, past_key_values=output_1.past_key_values, use_cache=True)
+
+        # Should complete without shape mismatch errors
+        assert output_2.logits.shape == (batch_size, new_seq_len, small_model_config.vocab_size)
+        assert output_2.past_key_values is not None
+
+        # Verify updated cache shapes
+        for layer_cache in output_2.past_key_values:
+            if layer_cache is not None:
+                k_latent, v_latent = layer_cache
+                expected_total_len = initial_seq_len + new_seq_len
+                assert k_latent.shape == (expected_total_len, batch_size, small_model_config.mla.d_latent)
+                assert v_latent.shape == (expected_total_len, batch_size, small_model_config.mla.d_latent)
+
+        # Third forward pass - continue incremental decoding with multiple tokens
+        new_seq_len_3 = 4
+        input_ids_3 = torch.randint(0, small_model_config.vocab_size, (batch_size, new_seq_len_3), device=device)
+
+        with torch.no_grad():
+            output_3 = model(input_ids_3, past_key_values=output_2.past_key_values, use_cache=True)
+
+        assert output_3.logits.shape == (batch_size, new_seq_len_3, small_model_config.vocab_size)
+
+        # Verify final cache shapes
+        for layer_cache in output_3.past_key_values:
+            if layer_cache is not None:
+                k_latent, v_latent = layer_cache
+                expected_total_len = initial_seq_len + 1 + new_seq_len_3
+                assert k_latent.shape == (expected_total_len, batch_size, small_model_config.mla.d_latent)
+                assert v_latent.shape == (expected_total_len, batch_size, small_model_config.mla.d_latent)
+
+        # Verify outputs are finite (no NaN/Inf from masking issues)
+        assert torch.all(torch.isfinite(output_1.logits))
+        assert torch.all(torch.isfinite(output_2.logits))
+        assert torch.all(torch.isfinite(output_3.logits))
+
 
 class TestRMSNorm:
     """Test cases for RMSNorm implementation to ensure it follows the DeepSeek-V3 specification."""
