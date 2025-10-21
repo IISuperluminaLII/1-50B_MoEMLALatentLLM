@@ -129,15 +129,13 @@ class DeepSeekV3Trainer:
         outputs = self.model(**batch)
 
         # Compute loss
+        # NOTE: outputs.loss already includes:
+        #   1. LM loss (cross-entropy)
+        #   2. MTP loss (if mtp_labels provided)
+        #   3. MoE load_balancing_loss (if MoE layers exist)
+        # All losses are combined in DeepSeekV3Model.forward(), so we use outputs.loss directly
+        # without adding auxiliary losses again (which would cause double-counting)
         loss = outputs.loss
-
-        # Add auxiliary losses
-        if hasattr(outputs, "load_balancing_loss") and outputs.load_balancing_loss is not None:
-            loss = loss + outputs.load_balancing_loss
-
-        # Multi-token prediction loss (if enabled)
-        if self.config.training.use_mtp and hasattr(outputs, "mtp_loss"):
-            loss = loss + outputs.mtp_loss
 
         # Backward pass
         self.optimizer.zero_grad()
