@@ -271,10 +271,7 @@ class DeepSeekV3Model(nn.Module):
                 if moe_output.load_balancing_loss is not None:
                     moe_load_balancing_losses.append(moe_output.load_balancing_loss)
                 if moe_output.expert_metrics is not None:
-                    moe_expert_metrics_per_layer.append({
-                        'layer': i,
-                        'metrics': moe_output.expert_metrics
-                    })
+                    moe_expert_metrics_per_layer.append(moe_output.expert_metrics)
             else:
                 # MLAOnlyBlock returns (hidden, kv_cache)
                 hidden, kv_cache = block_output
@@ -303,6 +300,38 @@ class DeepSeekV3Model(nn.Module):
         if len(moe_load_balancing_losses) > 0:
             moe_load_balancing_loss = torch.stack(moe_load_balancing_losses).mean()
 
+        # Aggregate MoE metrics across layers into a single dictionary
+        aggregated_moe_metrics = None
+        if moe_expert_metrics_per_layer:
+            # Initialize aggregated metrics
+            aggregated_moe_metrics = {}
+
+            # Collect all metrics keys from the first layer
+            if moe_expert_metrics_per_layer[0]:
+                for key in moe_expert_metrics_per_layer[0].keys():
+                    if key == 'expert_counts':
+                        # For expert_counts, concatenate across layers (don't average)
+                        all_counts = []
+                        for layer_metrics in moe_expert_metrics_per_layer:
+                            if key in layer_metrics and layer_metrics[key] is not None:
+                                counts = layer_metrics[key]
+                                if isinstance(counts, torch.Tensor):
+                                    counts = counts.tolist()
+                                all_counts.extend(counts if isinstance(counts, list) else [counts])
+                        if all_counts:
+                            aggregated_moe_metrics[key] = all_counts
+                    else:
+                        # For other metrics (entropy, utilization, etc.), average across layers
+                        values = []
+                        for layer_metrics in moe_expert_metrics_per_layer:
+                            if key in layer_metrics and layer_metrics[key] is not None:
+                                value = layer_metrics[key]
+                                if isinstance(value, torch.Tensor):
+                                    value = value.item()
+                                values.append(value)
+                        if values:
+                            aggregated_moe_metrics[key] = sum(values) / len(values)
+
         # Combine losses
         total_loss = None
         if (lm_loss is not None) and (mtp_loss is not None):
@@ -325,6 +354,6 @@ class DeepSeekV3Model(nn.Module):
         output.loss = total_loss
         output.past_key_values = present_key_values  # For inference caching
         output.load_balancing_loss = moe_load_balancing_loss  # MoE aux loss
-        output.moe_metrics = moe_expert_metrics_per_layer  # Per-layer expert stats (renamed for trainer compatibility)
+        output.moe_metrics = aggregated_moe_metrics  # Aggregated expert stats (now a flat dict for trainer)
 
         return output

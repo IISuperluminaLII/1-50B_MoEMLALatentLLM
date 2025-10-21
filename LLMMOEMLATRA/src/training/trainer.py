@@ -272,20 +272,50 @@ class DeepSeekV3Trainer:
                 self.monitor.log_scalar(f"train/{key}", value, self.step)
 
     def _average_moe_metrics(self) -> Dict[str, float]:
-        """Average MoE metrics over buffer."""
+        """Average MoE metrics over buffer.
+
+        Handles both old format (list of per-layer dicts) and new format (flat dict).
+        """
         if not self.moe_metrics_buffer:
             return {}
 
         avg_metrics = {}
-        keys = self.moe_metrics_buffer[0].keys()
 
-        for key in keys:
-            if key == "expert_counts":
-                continue  # Skip expert counts (too large)
+        # Check format of first item in buffer
+        first_item = self.moe_metrics_buffer[0]
 
-            values = [m[key] for m in self.moe_metrics_buffer if key in m]
-            if values and isinstance(values[0], (int, float)):
-                avg_metrics[f"moe_{key}"] = sum(values) / len(values)
+        # New format: flat dictionary
+        if isinstance(first_item, dict) and not isinstance(first_item, list):
+            # Get all possible keys from all buffer items
+            all_keys = set()
+            for item in self.moe_metrics_buffer:
+                if isinstance(item, dict):
+                    all_keys.update(item.keys())
+
+            for key in all_keys:
+                if key == "expert_counts":
+                    continue  # Skip expert counts (too large for logging)
+
+                # Collect values for this key across all buffer items
+                values = []
+                for m in self.moe_metrics_buffer:
+                    if isinstance(m, dict) and key in m:
+                        value = m[key]
+                        if isinstance(value, (int, float)):
+                            values.append(value)
+                        elif isinstance(value, torch.Tensor) and value.numel() == 1:
+                            values.append(value.item())
+
+                # Average the values if we have any
+                if values:
+                    avg_metrics[f"moe_{key}"] = sum(values) / len(values)
+
+        # Old format: list of per-layer dicts (backward compatibility)
+        elif isinstance(first_item, list):
+            # This shouldn't happen with the fix, but handle gracefully
+            print(f"[Warning] MoE metrics in old format (list), skipping aggregation")
+            # Could implement aggregation for old format here if needed
+            pass
 
         return avg_metrics
 
