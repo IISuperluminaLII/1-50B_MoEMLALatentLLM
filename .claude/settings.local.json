@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(\"C:\\Users\\Shashank Murthy\\.conda\\envs\\150BLLM\\python.exe\" -m pytest tests/unit/test_mtp.py -v --tb=no)",
+      "Bash(mkdir:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
