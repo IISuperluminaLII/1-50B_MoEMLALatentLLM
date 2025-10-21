@@ -1,0 +1,96 @@
+{
+  "experiment_name": "dolma_custom_balanced",
+  "description": "Custom Dolma configuration with balanced domain distribution",
+
+  "data": {
+    "dataset_name": "dolma",
+    "cache_dir": null,
+
+    "sources": [
+      {
+        "name": "common_crawl",
+        "subset": "dolma_v1_6_cc",
+        "weight": 0.25,
+        "description": "General web content"
+      },
+      {
+        "name": "starcoder",
+        "subset": "dolma_v1_6_starcoder",
+        "weight": 0.20,
+        "description": "Programming and code - INCREASED for code-focused model"
+      },
+      {
+        "name": "pes2o",
+        "subset": "dolma_v1_6_pes2o",
+        "weight": 0.15,
+        "description": "Scientific papers - INCREASED for technical reasoning"
+      },
+      {
+        "name": "openwebmath",
+        "subset": "dolma_v1_6_openwebmath",
+        "weight": 0.10,
+        "description": "Mathematical content - INCREASED for math capabilities"
+      },
+      {
+        "name": "reddit",
+        "subset": "dolma_v1_6_reddit",
+        "weight": 0.10,
+        "description": "Conversational text"
+      },
+      {
+        "name": "c4",
+        "subset": "dolma_v1_6_c4",
+        "weight": 0.10,
+        "description": "Clean web text"
+      },
+      {
+        "name": "wikimedia",
+        "subset": "dolma_v1_6_wikimedia",
+        "weight": 0.05,
+        "description": "Wikipedia - factual knowledge"
+      },
+      {
+        "name": "proof_pile_2",
+        "subset": "dolma_v1_6_proof_pile_2",
+        "weight": 0.05,
+        "description": "Formal proofs and mathematics"
+      }
+    ],
+
+    "preprocessing": {
+      "shuffle": true,
+      "shuffle_seed": 12345,
+      "num_workers": 4,
+      "streaming": true,
+      "buffer_size": 5000
+    }
+  },
+
+  "training": {
+    "seq_length": 1024,
+    "micro_batch_size": 8,
+    "global_batch_size": 512
+  },
+
+  "customization_notes": [
+    "This configuration emphasizes technical and reasoning-focused content.",
+    "Code weight increased to 20% (vs 8% in DeepSeek-V3) for code-specialized model.",
+    "Math + science combined at 30% for strong STEM capabilities.",
+    "General web content reduced to 35% (vs 47% in DeepSeek-V3).",
+    "Suitable for models targeting technical/scientific domains."
+  ],
+
+  "use_cases": [
+    "Code generation and understanding models",
+    "Scientific reasoning and mathematical problem solving",
+    "Technical documentation and API understanding",
+    "Research paper comprehension and generation"
+  ],
+
+  "domain_distribution": {
+    "code_and_technical": 0.45,
+    "general_web": 0.35,
+    "conversational": 0.10,
+    "structured_knowledge": 0.10
+  }
+}

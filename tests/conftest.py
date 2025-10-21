@@ -13,8 +13,9 @@ from src.config.model_config import (
     ParallelConfig,
     TrainingConfig,
 )
-from src.data.pipeline import PipelineConfig
-from src.data.domain_mixer import Domain
+# Data module imports - commented out as data module was not moved
+# from src.data.pipeline import PipelineConfig
+# from src.data.domain_mixer import Domain
 
 
 @pytest.fixture
@@ -196,73 +197,74 @@ def mock_checkpoint(temp_dir):
     return checkpoint_path
 
 
-@pytest.fixture
-def sample_documents():
-    """Sample documents for data pipeline testing."""
-    return [
-        {
-            "id": "doc1",
-            "text": "This is a test document for preliminary cleaning and validation. It has some special characters like ampersands &amp; HTML entities that need to be properly decoded. The document is designed to pass all heuristic filters by having sufficient length, word count, and appropriate character ratios. Machine learning has revolutionized the field of artificial intelligence in recent years.",
-            "domain": Domain.WEB_GENERAL
-        },
-        {
-            "id": "doc2",
-            "text": "Another comprehensive test document with sufficient length to pass all heuristic filters effectively. This document contains enough words and characters to be considered valid and high-quality by the preprocessing pipeline. Natural language processing techniques are essential for understanding and generating human language. The document structure ensures it meets minimum requirements for word count, character count, and various quality metrics specified in the pipeline configuration.",
-            "domain": Domain.WEB_EDUCATIONAL
-        },
-        {
-            "id": "doc3",
-            "text": "def factorial(n):\n    '''Calculate factorial recursively.'''\n    if n <= 1:\n        return 1\n    return n * factorial(n-1)\n\n# Example usage with explanation\nresult = factorial(5)\nprint(f'Factorial of 5 is {result}')\n\n# This code demonstrates basic recursion in Python programming language.\n# The factorial function computes the product of all positive integers up to n.\n# Time complexity is O(n) and space complexity is O(n) due to call stack.",
-            "domain": Domain.CODE
-        },
-        {
-            "id": "doc4",
-            "text": "Theorem: For any prime number p and integer a not divisible by p, we have a^(p-1) ≡ 1 (mod p). This fundamental result is known as Fermat's Little Theorem and has important applications in number theory and cryptography. The theorem provides a basis for primality testing and is used in the RSA encryption algorithm. It was first stated by Pierre de Fermat in 1640 and plays a crucial role in modern computational mathematics.",
-            "domain": Domain.MATH
-        },
-        {
-            "id": "doc5",
-            "text": "Short text.",  # Too short, should be filtered
-            "domain": Domain.UNKNOWN
-        },
-    ]
+# Data-related fixtures commented out - data module not moved
+# @pytest.fixture
+# def sample_documents():
+#     """Sample documents for data pipeline testing."""
+#     return [
+#         {
+#             "id": "doc1",
+#             "text": "This is a test document for preliminary cleaning and validation. It has some special characters like ampersands &amp; HTML entities that need to be properly decoded. The document is designed to pass all heuristic filters by having sufficient length, word count, and appropriate character ratios. Machine learning has revolutionized the field of artificial intelligence in recent years.",
+#             "domain": Domain.WEB_GENERAL
+#         },
+#         {
+#             "id": "doc2",
+#             "text": "Another comprehensive test document with sufficient length to pass all heuristic filters effectively. This document contains enough words and characters to be considered valid and high-quality by the preprocessing pipeline. Natural language processing techniques are essential for understanding and generating human language. The document structure ensures it meets minimum requirements for word count, character count, and various quality metrics specified in the pipeline configuration.",
+#             "domain": Domain.WEB_EDUCATIONAL
+#         },
+#         {
+#             "id": "doc3",
+#             "text": "def factorial(n):\n    '''Calculate factorial recursively.'''\n    if n <= 1:\n        return 1\n    return n * factorial(n-1)\n\n# Example usage with explanation\nresult = factorial(5)\nprint(f'Factorial of 5 is {result}')\n\n# This code demonstrates basic recursion in Python programming language.\n# The factorial function computes the product of all positive integers up to n.\n# Time complexity is O(n) and space complexity is O(n) due to call stack.",
+#             "domain": Domain.CODE
+#         },
+#         {
+#             "id": "doc4",
+#             "text": "Theorem: For any prime number p and integer a not divisible by p, we have a^(p-1) ≡ 1 (mod p). This fundamental result is known as Fermat's Little Theorem and has important applications in number theory and cryptography. The theorem provides a basis for primality testing and is used in the RSA encryption algorithm. It was first stated by Pierre de Fermat in 1640 and plays a crucial role in modern computational mathematics.",
+#             "domain": Domain.MATH
+#         },
+#         {
+#             "id": "doc5",
+#             "text": "Short text.",  # Too short, should be filtered
+#             "domain": Domain.UNKNOWN
+#         },
+#     ]
 
 
-@pytest.fixture
-def temp_jsonl_file(temp_dir, sample_documents):
-    """Create temporary JSONL file with sample documents."""
-    import json
-    file_path = temp_dir / "test_data.jsonl"
-
-    with open(file_path, 'w') as f:
-        for doc in sample_documents:
-            # Convert domain enum to string for JSON
-            doc_copy = doc.copy()
-            if hasattr(doc_copy['domain'], 'value'):
-                doc_copy['domain'] = doc_copy['domain'].value
-            f.write(json.dumps(doc_copy) + '\n')
-
-    return file_path
-
-
-@pytest.fixture
-def basic_pipeline_config(temp_dir):
-    """Basic pipeline configuration for testing."""
-    return PipelineConfig(
-        input_path=None,  # Will be set in tests
-        output_dir=str(temp_dir / "output"),
-        output_format="jsonl",
-        save_intermediate=True,
-        enable_cleaning=True,
-        enable_deduplication=True,
-        enable_heuristic_filters=True,
-        enable_quality_filters=False,  # Disable (requires models)
-        enable_domain_mixing=False,  # Disable for simpler tests
-        heuristic_config={"min_line_count": 1},  # Allow single-line test documents
-        batch_size=100,
-        num_workers=1,
-        show_progress=False,  # Disable for cleaner test output
-    )
+# @pytest.fixture
+# def temp_jsonl_file(temp_dir, sample_documents):
+#     """Create temporary JSONL file with sample documents."""
+#     import json
+#     file_path = temp_dir / "test_data.jsonl"
+#
+#     with open(file_path, 'w') as f:
+#         for doc in sample_documents:
+#             # Convert domain enum to string for JSON
+#             doc_copy = doc.copy()
+#             if hasattr(doc_copy['domain'], 'value'):
+#                 doc_copy['domain'] = doc_copy['domain'].value
+#             f.write(json.dumps(doc_copy) + '\n')
+#
+#     return file_path
+#
+#
+# @pytest.fixture
+# def basic_pipeline_config(temp_dir):
+#     """Basic pipeline configuration for testing."""
+#     return PipelineConfig(
+#         input_path=None,  # Will be set in tests
+#         output_dir=str(temp_dir / "output"),
+#         output_format="jsonl",
+#         save_intermediate=True,
+#         enable_cleaning=True,
+#         enable_deduplication=True,
+#         enable_heuristic_filters=True,
+#         enable_quality_filters=False,  # Disable (requires models)
+#         enable_domain_mixing=False,  # Disable for simpler tests
+#         heuristic_config={"min_line_count": 1},  # Allow single-line test documents
+#         batch_size=100,
+#         num_workers=1,
+#         show_progress=False,  # Disable for cleaner test output
+#     )
 
 
 # GPU markers

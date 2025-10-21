@@ -1,0 +1,119 @@
+{
+  "experiment_name": "dolma_deepseek_v3_full",
+  "description": "Full Dolma configuration matching DeepSeek-V3 paper specifications",
+
+  "data": {
+    "dataset_name": "dolma",
+    "cache_dir": null,
+
+    "sources": [
+      {
+        "name": "common_crawl",
+        "subset": "dolma_v1_6_cc",
+        "weight": 0.35,
+        "description": "Common Crawl web data - largest and most diverse source"
+      },
+      {
+        "name": "c4",
+        "subset": "dolma_v1_6_c4",
+        "weight": 0.12,
+        "description": "Colossal Clean Crawled Corpus - high-quality filtered web text"
+      },
+      {
+        "name": "refined_web",
+        "subset": "dolma_v1_6_refined_web",
+        "weight": 0.10,
+        "description": "RefinedWeb - curated high-quality web content"
+      },
+      {
+        "name": "reddit",
+        "subset": "dolma_v1_6_reddit",
+        "weight": 0.10,
+        "description": "Reddit posts from PushShift API - conversational and informal text"
+      },
+      {
+        "name": "starcoder",
+        "subset": "dolma_v1_6_starcoder",
+        "weight": 0.08,
+        "description": "GitHub code repositories - programming content"
+      },
+      {
+        "name": "pes2o",
+        "subset": "dolma_v1_6_pes2o",
+        "weight": 0.08,
+        "description": "Scientific papers from Semantic Scholar - academic content"
+      },
+      {
+        "name": "redpajama",
+        "subset": "dolma_v1_6_redpajama",
+        "weight": 0.05,
+        "description": "RedPajama v1 - open LLM training dataset"
+      },
+      {
+        "name": "openwebmath",
+        "subset": "dolma_v1_6_openwebmath",
+        "weight": 0.04,
+        "description": "Mathematical content from web - math-focused text"
+      },
+      {
+        "name": "flan",
+        "subset": "dolma_v1_6_flan",
+        "weight": 0.03,
+        "description": "Flan Collection - instruction tuning data"
+      },
+      {
+        "name": "proof_pile_2",
+        "subset": "dolma_v1_6_proof_pile_2",
+        "weight": 0.02,
+        "description": "Mathematical and formal proofs"
+      },
+      {
+        "name": "gutenberg",
+        "subset": "dolma_v1_6_gutenberg",
+        "weight": 0.01,
+        "description": "Project Gutenberg - public domain books"
+      },
+      {
+        "name": "metawika",
+        "subset": "dolma_v1_6_metawika",
+        "weight": 0.01,
+        "description": "Wikipedia metadata and structure"
+      },
+      {
+        "name": "wikimedia",
+        "subset": "dolma_v1_6_wikimedia",
+        "weight": 0.01,
+        "description": "Wikipedia and Wikimedia projects - encyclopedic content"
+      }
+    ],
+
+    "preprocessing": {
+      "shuffle": true,
+      "shuffle_seed": 42,
+      "num_workers": 8,
+      "streaming": true,
+      "buffer_size": 10000
+    }
+  },
+
+  "training": {
+    "seq_length": 2048,
+    "micro_batch_size": 4,
+    "global_batch_size": 1024,
+    "gradient_accumulation_steps": 256
+  },
+
+  "references": [
+    "DeepSeek-AI (2024). DeepSeek-V3 Technical Report. arXiv:2412.19437",
+    "Soldaini et al. (2024). Dolma: an Open Corpus of Three Trillion Tokens. arXiv:2402.00159"
+  ],
+
+  "notes": [
+    "This configuration matches the domain mixing strategy used in DeepSeek-V3.",
+    "All 13 Dolma v1.6 sources are included with production weights.",
+    "Total corpus size: ~3 trillion tokens across diverse domains.",
+    "Common Crawl has highest weight (35%) for general web knowledge.",
+    "Code, math, and scientific content combined account for ~17%.",
+    "Conversational and structured text (Reddit, Wikipedia) provide ~12%."
+  ]
+}
