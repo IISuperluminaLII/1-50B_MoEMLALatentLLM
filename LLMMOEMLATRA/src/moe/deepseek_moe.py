@@ -49,6 +49,7 @@ class TopKRouter(nn.Module):
         use_aux_loss_free: bool = False,
         router_temperature: float = 1.0,
         router_noise_std: float = 0.1,
+        router_bias_decay: float = 0.99,
     ):
         super().__init__()
 
@@ -59,6 +60,7 @@ class TopKRouter(nn.Module):
         self.use_aux_loss_free = use_aux_loss_free
         self.temperature = router_temperature
         self.noise_std = router_noise_std
+        self.router_bias_decay = router_bias_decay
 
         # Router linear layer
         self.router = nn.Linear(d_model, num_experts, bias=False)
@@ -69,7 +71,7 @@ class TopKRouter(nn.Module):
                 "expert_loads",
                 torch.zeros(num_experts, dtype=torch.float32),
             )
-            self.load_ema_decay = 0.99
+            self.load_ema_decay = router_bias_decay
 
     def forward(
         self,
@@ -232,6 +234,7 @@ class DeepSeekMoE(nn.Module):
         aux_loss_weight: float = 0.001,
         use_aux_loss_free: bool = False,
         use_deep_ep: bool = True,
+        router_bias_decay: float = 0.99,
     ):
         super().__init__()
 
@@ -248,6 +251,7 @@ class DeepSeekMoE(nn.Module):
             num_experts_per_token=num_experts_per_token,
             aux_loss_weight=aux_loss_weight,
             use_aux_loss_free=use_aux_loss_free,
+            router_bias_decay=router_bias_decay,
         )
 
         # Expert FFNs

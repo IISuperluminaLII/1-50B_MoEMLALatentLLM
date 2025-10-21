@@ -36,6 +36,7 @@
       "router_aux_loss_weight": 0.001,
       "router_temperature": 1.0,
       "router_noise_std": 0.0,
+      "router_bias_decay": 0.99,
       "capacity_factor": 1.0,
       "use_aux_loss_free": false,
       "balance_loss_type": "entropy",

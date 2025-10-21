@@ -10,6 +10,8 @@ from src.moe.deepseek_moe import (
     ExpertFFN,
     MoEOutput,
 )
+from src.model.deepseek_v3_model import DeepSeekV3Model, MLAPlusMoEBlock
+from src.config.model_config import get_small_test_config
 
 
 class TestExpertFFN:
@@ -364,3 +366,112 @@ class TestDeepSeekMoE:
 
         assert output.hidden_states.shape == (2, 8, 256)
         assert len(output.expert_metrics['expert_counts']) == num_experts
+
+    def test_router_bias_decay_configurable(self, device):
+        """Test that router bias decay can be configured."""
+        # Create router with custom bias decay
+        router = TopKRouter(
+            d_model=256,
+            num_experts=8,
+            num_experts_per_token=2,
+            use_aux_loss_free=True,
+            router_bias_decay=0.95,
+        ).to(device)
+
+        assert router.router_bias_decay == 0.95
+        assert router.load_ema_decay == 0.95
+
+        # Run a few passes to ensure it works
+        hidden_states = torch.randn(32, 256, device=device)
+        for _ in range(3):
+            router(hidden_states, training=True)
+
+        # Expert loads should be tracked
+        assert router.expert_loads.sum() > 0
+
+    def test_deep_ep_fallback(self, device):
+        """Test graceful fallback when DeepEP unavailable."""
+        # Create MoE with DeepEP enabled (should fallback gracefully)
+        moe = DeepSeekMoE(
+            d_model=256,
+            num_experts=8,
+            num_experts_per_token=2,
+            expert_intermediate_size=512,
+            use_deep_ep=True,  # Will fallback if not available
+        ).to(device)
+
+        hidden_states = torch.randn(2, 8, 256, device=device)
+
+        # Should work even if DeepEP not available
+        output = moe(hidden_states, training=False)
+
+        assert output.hidden_states.shape == (2, 8, 256)
+        assert output.expert_metrics is not None
+
+
+class TestModelIntegration:
+    """Test that model uses DeepSeekMoE correctly."""
+
+    def test_model_uses_deepseek_moe(self):
+        """Verify that DeepSeekV3Model uses DeepSeekMoE, not TopKMoE."""
+        config = get_small_test_config()
+        model = DeepSeekV3Model(config)
+
+        # Check that MoE blocks use DeepSeekMoE
+        moe_blocks = [b for b in model.blocks if isinstance(b, MLAPlusMoEBlock)]
+        assert len(moe_blocks) > 0, "Model should have at least one MoE block"
+
+        for block in moe_blocks:
+            assert isinstance(block.moe, DeepSeekMoE), \
+                f"MoE block should use DeepSeekMoE, not {type(block.moe)}"
+
+    def test_model_forwards_with_moe_metrics(self, device):
+        """Test that model forward returns MoE metrics."""
+        config = get_small_test_config()
+        model = DeepSeekV3Model(config).to(device)
+
+        batch_size, seq_len = 2, 16
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
+        labels = input_ids.clone()
+
+        output = model(input_ids, labels=labels)
+
+        # Check output has MoE metrics
+        assert hasattr(output, 'load_balancing_loss')
+        assert hasattr(output, 'expert_metrics')
+
+        # Expert metrics should be a list (one per MoE layer)
+        assert isinstance(output.expert_metrics, list)
+
+        # If training with aux loss, load_balancing_loss should be present
+        if config.moe.router_aux_loss_weight > 0:
+            assert output.load_balancing_loss is not None
+
+    def test_aux_loss_free_mode_in_model(self, device):
+        """Test aux-loss-free mode works in full model."""
+        config = get_small_test_config()
+        config.moe.use_aux_loss_free = True
+        config.moe.router_aux_loss_weight = 0.0  # No aux loss
+        config.moe.router_bias_decay = 0.95
+
+        model = DeepSeekV3Model(config).to(device)
+
+        # Verify MoE blocks have aux-loss-free enabled
+        moe_blocks = [b for b in model.blocks if isinstance(b, MLAPlusMoEBlock)]
+        for block in moe_blocks:
+            assert block.moe.router.use_aux_loss_free
+            assert block.moe.router.router_bias_decay == 0.95
+
+        # Run a few forward passes
+        batch_size, seq_len = 2, 16
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
+
+        for _ in range(3):
+            output = model(input_ids)
+
+            # Expert loads should be tracked in router
+            for block in moe_blocks:
+                if hasattr(block.moe.router, 'expert_loads'):
+                    # After training, expert loads should be updated
+                    # (may be zero initially)
+                    assert block.moe.router.expert_loads is not None
