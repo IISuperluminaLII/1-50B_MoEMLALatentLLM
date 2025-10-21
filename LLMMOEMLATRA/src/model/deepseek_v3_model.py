@@ -96,6 +96,7 @@ class MLAPlusMoEBlock(nn.Module):
         self.norm1 = RMSNorm(d_model, eps=norm_eps)
 
         # DeepSeekMoE with full config support (aux-loss-free, DeepEP, shared experts)
+        # Note: This is a placeholder that will be overridden with full config in DeepSeekV3Model
         self.moe = DeepSeekMoE(
             d_model=d_model,
             num_experts=moe_num_experts,
@@ -107,6 +108,9 @@ class MLAPlusMoEBlock(nn.Module):
             aux_loss_weight=0.001,
             use_aux_loss_free=False,  # Will be overridden by config
             use_deep_ep=False,  # Will be overridden by config
+            router_temperature=1.0,  # Will be overridden by config
+            router_noise_std=0.1,  # Will be overridden by config
+            min_expert_capacity=4,  # Will be overridden by config
         )
         self.norm2 = RMSNorm(d_model, eps=norm_eps)
 
@@ -207,6 +211,9 @@ class DeepSeekV3Model(nn.Module):
                     use_aux_loss_free=getattr(config.moe, 'use_aux_loss_free', False),
                     use_deep_ep=getattr(config.moe, 'use_deep_ep', False),
                     router_bias_decay=getattr(config.moe, 'router_bias_decay', 0.99),
+                    router_temperature=getattr(config.moe, 'router_temperature', 1.0),
+                    router_noise_std=getattr(config.moe, 'router_noise_std', 0.1),
+                    min_expert_capacity=getattr(config.moe, 'min_expert_capacity', 4),
                 )
 
             self.blocks.append(block)
@@ -355,5 +362,6 @@ class DeepSeekV3Model(nn.Module):
         output.past_key_values = present_key_values  # For inference caching
         output.load_balancing_loss = moe_load_balancing_loss  # MoE aux loss
         output.moe_metrics = aggregated_moe_metrics  # Aggregated expert stats (now a flat dict for trainer)
+        output.expert_metrics = moe_expert_metrics_per_layer  # Keep per-layer metrics for compatibility
 
         return output
