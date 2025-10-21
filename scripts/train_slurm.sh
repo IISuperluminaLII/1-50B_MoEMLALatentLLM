@@ -21,7 +21,7 @@ echo "Tasks per node: $SLURM_NTASKS_PER_NODE"
 echo "========================================="
 
 # Configuration
-CONFIG_FILE="${1:-configs/deepseek_v3_base.yaml}"
+CONFIG_FILE="${1:-configs/deepseek_v3_1b.json}"
 
 # Load modules (adjust for your cluster)
 module load cuda/12.1

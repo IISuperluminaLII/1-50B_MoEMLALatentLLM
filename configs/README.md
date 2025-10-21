@@ -4,34 +4,26 @@ This directory contains configuration files for training DeepSeek-V3 models.
 
 ## Available Configurations
 
-### `deepseek_v3_base.yaml`
-Full-scale DeepSeek-V3 configuration (671B parameters, 37B active).
+The repository includes 12 pre-configured model sizes (1B to 50B parameters) in JSON format:
 
-**Requirements:**
-- 32+ H100 GPUs (recommended)
-- High-bandwidth interconnect (InfiniBand/NVLink)
-- FlashMLA and DeepEP installed
-
-**Key parameters:**
-- Layers: 61
-- Hidden size: 7168
-- Latent KV: 1536 (21% of hidden)
-- Experts: 256 total, 8 active
-- Context length: 128K tokens
-
-### `deepseek_v3_small.yaml`
+### `deepseek_v3_1b.json` (Development)
 Small configuration for development and testing.
 
 **Requirements:**
-- 4-8 GPUs
-- Standard interconnect OK
+- 1-2 GPUs
+- 24GB+ GPU memory
 
 **Key parameters:**
-- Layers: 12
-- Hidden size: 1024
-- Latent KV: 256 (25% of hidden)
-- Experts: 16 total, 2 active
+- Layers: 16
+- Hidden size: 1536
+- Latent KV: 384 (25% of hidden)
+- Experts: 16 total, 4 active
 - Context length: 8K tokens
+
+### `deepseek_v3_5b.json` through `deepseek_v3_50b.json`
+Scaled configurations from 5B to 50B parameters, each optimized for different GPU counts and use cases. See `scripts/select_config.py` for full details.
+
+**Note:** The repository has migrated from YAML to JSON configs. Use `scripts/run_training.py` as the primary training launcher
 
 ### `deepspeed_config.json`
 DeepSpeed configuration for distributed training.
@@ -44,20 +36,18 @@ DeepSpeed configuration for distributed training.
 
 ## Configuration Structure
 
-```yaml
-model:
-  mla:          # Multi-head Latent Attention settings
-  moe:          # Mixture of Experts settings
-
-parallel:       # Parallelism configuration
-
-training:       # Training hyperparameters
-
-data:          # Data loading settings
-
-checkpoint:    # Checkpointing settings
-
-logging:       # Logging configuration
+```json
+{
+  "model": {
+    "mla": {},    // Multi-head Latent Attention settings
+    "moe": {}     // Mixture of Experts settings
+  },
+  "distributed": {},  // Parallelism configuration
+  "training": {},     // Training hyperparameters
+  "data": {},         // Data loading settings
+  "checkpointing": {},// Checkpointing settings
+  "logging": {}       // Logging configuration
+}
 ```
 
 ## Key Hyperparameters
@@ -114,57 +104,69 @@ logging:       # Logging configuration
 
 ### For Smaller GPUs (e.g., A100 40GB)
 
-```yaml
-model:
-  mla:
-    d_model: 4096
-    d_latent: 1024
-    use_fp8_kv: false  # A100 doesn't have FP8
-
-  moe:
-    num_experts: 64
-    num_experts_per_token: 4
-
-training:
-  global_batch_size: 2048
-  micro_batch_size: 1
-  seq_length: 2048
+```json
+{
+  "model": {
+    "mla": {
+      "d_model": 4096,
+      "d_latent": 1024,
+      "use_fp8_kv": false
+    },
+    "moe": {
+      "num_experts": 64,
+      "num_experts_per_token": 4
+    }
+  },
+  "training": {
+    "global_batch_size": 2048,
+    "micro_batch_size": 1,
+    "seq_length": 2048
+  }
+}
 ```
 
 ### For Maximum Throughput
 
-```yaml
-model:
-  mla:
-    use_fp8_kv: true
-    use_flash_mla: true
-
-  moe:
-    use_deep_ep: true
-    deep_ep_fp8: true
-
-parallel:
-  zero_stage: 1  # ZeRO-1 for speed
-  overlap_grad_reduce: true
-
-training:
-  use_fp8: true  # Aggressive FP8
+```json
+{
+  "model": {
+    "mla": {
+      "use_fp8_kv": true,
+      "use_flash_mla": true
+    },
+    "moe": {
+      "use_deep_ep": true,
+      "deep_ep_fp8": true
+    }
+  },
+  "distributed": {
+    "zero_stage": 1,
+    "overlap_grad_reduce": true
+  },
+  "training": {
+    "use_fp8": true
+  }
+}
 ```
 
 ### For Maximum Quality
 
-```yaml
-model:
-  mla:
-    d_latent: 2048  # Higher latent dim
-
-  moe:
-    router_aux_loss_weight: 0.01  # Stronger balancing
-    capacity_factor: 1.25  # More capacity
-
-training:
-  grad_clip: 0.5  # Tighter clipping
-  weight_decay: 0.05  # Less regularization
+```json
+{
+  "model": {
+    "mla": {
+      "d_latent": 2048
+    },
+    "moe": {
+      "router_aux_loss_weight": 0.01,
+      "capacity_factor": 1.25
+    }
+  },
+  "training": {
+    "grad_clip": 0.5,
+    "weight_decay": 0.05
+  }
+}
 ```
 
 ## Validation
@@ -172,16 +174,12 @@ training:
 Before training, validate your configuration:
 
 ```python
-from src.config.model_config import load_config
+from src.utils.config_loader import load_config
 
-config = load_config("configs/deepseek_v3_base.yaml")
-config.print_summary()
-
-# Check active params
-print(f"Active params: {config.active_params_per_token() / 1e9:.1f}B")
-
-# Check GPU requirements
-print(f"Total GPUs: {config.parallel.total_gpus()}")
+config = load_config("configs/deepseek_v3_1b.json")
+print(f"Experiment: {config.experiment_name}")
+print(f"Model layers: {config.model_config.num_layers}")
+print(f"Hidden dim: {config.model_config.mla.d_model}")
 ```
 
 ## References

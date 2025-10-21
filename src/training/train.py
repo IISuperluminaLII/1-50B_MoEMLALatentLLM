@@ -3,10 +3,12 @@ Main training entry point for DeepSeek-V3.
 
 Usage:
     Single node:
-        python train.py --config configs/deepseek_v3_small.yaml
+        python train.py --config configs/deepseek_v3_1b.json
 
     Multi-node with DeepSpeed:
-        deepspeed --num_gpus=8 train.py --config configs/deepseek_v3_base.yaml --deepspeed
+        deepspeed --num_gpus=8 train.py --config configs/deepseek_v3_5b.json --deepspeed
+
+Note: This is a legacy entry point. Prefer using scripts/run_training.py for JSON configs.
 """
 import argparse
 import os
@@ -37,7 +39,7 @@ def parse_args():
         "--config",
         type=str,
         required=True,
-        help="Path to YAML configuration file"
+        help="Path to configuration file (JSON or YAML)"
     )
     parser.add_argument(
         "--resume",
@@ -73,7 +75,7 @@ def parse_args():
         "--data-config",
         type=str,
         default=None,
-        help="Path to data preprocessing configuration YAML"
+        help="Path to data preprocessing configuration (JSON or YAML)"
     )
     parser.add_argument(
         "--preprocessed-data-path",
@@ -92,9 +94,14 @@ def parse_args():
 
 
 def load_config(config_path: str) -> DeepSeekV3Config:
-    """Load configuration from YAML file."""
+    """Load configuration from JSON or YAML file."""
+    import json
+
     with open(config_path, 'r') as f:
-        config_dict = yaml.safe_load(f)
+        if config_path.endswith('.json'):
+            config_dict = json.load(f)
+        else:
+            config_dict = yaml.safe_load(f)
 
     # Parse sub-configs
     mla_config = MLAConfig(**config_dict["model"]["mla"])
