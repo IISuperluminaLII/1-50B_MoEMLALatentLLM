@@ -40,7 +40,7 @@ class TestDolmaSource:
 
     def test_weight_validation_lower_bound(self):
         """Test weight validation rejects negative weights."""
-        with pytest.raises(ValueError, match="Weight must be in"):
+        with pytest.raises(ValueError, match="Weight must be"):
             DolmaSource(
                 name="test",
                 subset="test_subset",
@@ -49,14 +49,15 @@ class TestDolmaSource:
             )
 
     def test_weight_validation_upper_bound(self):
-        """Test weight validation rejects weights > 1."""
-        with pytest.raises(ValueError, match="Weight must be in"):
-            DolmaSource(
-                name="test",
-                subset="test_subset",
-                weight=1.5,
-                description="Invalid large weight"
-            )
+        """Test weights > 1 are allowed for normalization."""
+        # Should NOT raise an error - weights > 1 are normalized
+        source = DolmaSource(
+            name="test",
+            subset="test_subset",
+            weight=1.5,
+            description="Large weight for normalization"
+        )
+        assert source.weight == 1.5
 
     def test_edge_case_weights(self):
         """Test edge case weights (0 and 1)."""
@@ -194,13 +195,19 @@ class TestDolmaDatasetTokenization:
 
         # Create real tokenizer for testing
         tokenizer = Mock()
+        # Return padded tensors matching seq_length
+        seq_len = 128
+        padded_ids = torch.ones((1, seq_len), dtype=torch.long)
+        padded_ids[0, :5] = torch.tensor([1, 2, 3, 4, 5])
+        padded_mask = torch.zeros((1, seq_len), dtype=torch.long)
+        padded_mask[0, :5] = 1
         tokenizer.return_value = {
-            "input_ids": torch.tensor([[1, 2, 3, 4, 5]]),
-            "attention_mask": torch.tensor([[1, 1, 1, 1, 1]])
+            "input_ids": padded_ids,
+            "attention_mask": padded_mask
         }
 
         with patch('src.data.dolma_loader.DolmaDataset._load_datasets'):
-            dataset = DolmaDataset(sources=sources, tokenizer=tokenizer, seq_length=128)
+            dataset = DolmaDataset(sources=sources, tokenizer=tokenizer, seq_length=seq_len)
 
             examples = {"text": ["Test document"]}
             result = dataset._tokenize_function(examples)
@@ -259,10 +266,19 @@ class TestDolmaDatasetTokenization:
     def test_iteration_with_empty_text(self):
         """Test that empty text documents are skipped."""
         sources = [DolmaSource("test", "subset", 1.0, "Test")]
+
+        # Mock tokenizer to return valid tensors
         tokenizer = Mock()
+        seq_len = 128
+        padded_ids = torch.ones((1, seq_len), dtype=torch.long)
+        padded_mask = torch.ones((1, seq_len), dtype=torch.long)
+        tokenizer.return_value = {
+            "input_ids": padded_ids,
+            "attention_mask": padded_mask
+        }
 
         with patch('src.data.dolma_loader.DolmaDataset._load_datasets'):
-            dataset = DolmaDataset(sources=sources, tokenizer=tokenizer, seq_length=128)
+            dataset = DolmaDataset(sources=sources, tokenizer=tokenizer, seq_length=seq_len)
 
             # Mock dataset with empty text
             dataset.dataset = [
