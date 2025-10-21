@@ -60,6 +60,7 @@ class MoEConfig:
     router_aux_loss_weight: float = 0.001  # Start small; 0.0 for aux-loss-free
     router_temperature: float = 1.0
     router_noise_std: float = 0.1  # Anneal to 0 during training
+    router_bias_decay: float = 0.99  # EMA decay for aux-loss-free bias tracking
     capacity_factor: float = 1.0  # 1.0-1.25 recommended
 
     # Load balancing

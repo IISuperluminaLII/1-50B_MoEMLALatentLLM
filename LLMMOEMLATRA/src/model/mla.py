@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import math
+from typing import Optional, Tuple
 from .rope import apply_rope, build_rope_cache
 
 class RMSNorm(nn.Module):
@@ -15,23 +16,62 @@ class RMSNorm(nn.Module):
         norm = x.norm(2, dim=-1, keepdim=True)
         return (x / (norm + self.eps)) * self.weight
 
+class MLAOutput:
+    """Output from MLA forward pass."""
+    def __init__(self, hidden_states, kv_cache=None):
+        self.hidden_states = hidden_states
+        self.kv_cache = kv_cache
+
 class MLAAttention(nn.Module):
     """
-    Multi-Head Latent Attention (simplified example).
-    - Projects Q, K, V, applies RoPE to Q and K, then does standard attn.
-    - Uses RMSNorm before attention.
+    Multi-Head Latent Attention with KV cache compression.
+
+    Compresses K/V into a low-dimensional latent space for efficient KV cache.
+    This is the core innovation of MLA - instead of caching full K/V at
+    [batch, seq, num_heads, head_dim], we cache compressed KV_latent at
+    [batch, seq, d_latent], achieving significant memory savings.
+
+    Architecture:
+        Q: x -> [seq, batch, d_model] (full rank)
+        KV: x -> [seq, batch, d_latent] (compressed bottleneck)
+        K: KV_latent -> [seq, batch, num_heads, head_dim] (expanded for attention)
+        V: KV_latent -> [seq, batch, num_heads, head_dim] (expanded for attention)
     """
-    def __init__(self, d_model, num_heads, rope_base=10000.0, dropout=0.1):
+    def __init__(
+        self,
+        d_model,
+        num_heads,
+        d_latent=None,
+        rope_base=10000.0,
+        dropout=0.1,
+        use_fp8_kv=False,
+        max_context_length=128000,
+    ):
         super().__init__()
         self.num_heads = num_heads
         self.d_model = d_model
         self.head_dim = d_model // num_heads
         self.rope_base = rope_base
+        self.use_fp8_kv = use_fp8_kv
+        self.max_context_length = max_context_length
 
-        # Q, K, V projections
+        # Default d_latent to ~1/4 of d_model if not specified (typical MLA ratio)
+        self.d_latent = d_latent if d_latent is not None else max(d_model // 4, 128)
+
+        # Validate latent dimension
+        if self.d_latent >= d_model:
+            raise ValueError(f"d_latent ({self.d_latent}) must be < d_model ({d_model})")
+
+        # Q projection (full rank)
         self.q_proj = nn.Linear(d_model, d_model)
-        self.k_proj = nn.Linear(d_model, d_model)
-        self.v_proj = nn.Linear(d_model, d_model)
+
+        # KV compression to latent space (shared bottleneck for K and V)
+        self.kv_compress = nn.Linear(d_model, self.d_latent)
+
+        # Separate expansion from latent to full K and V
+        self.k_expand = nn.Linear(self.d_latent, d_model)
+        self.v_expand = nn.Linear(self.d_latent, d_model)
+
         self.attn_dropout = nn.Dropout(dropout)
 
         # Output projection
@@ -48,25 +88,90 @@ class MLAAttention(nn.Module):
             self.rope_cos = cos
             self.rope_sin = sin
 
-    def forward(self, x, causal_mask=None, key_padding_mask=None):
+    def forward(
+        self,
+        x,
+        causal_mask=None,
+        key_padding_mask=None,
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+    ):
         """
-        x shape: [seq_len, batch, d_model]
+        Forward pass with latent KV compression.
+
+        Args:
+            x: Input tensor [seq_len, batch, d_model]
+            causal_mask: Causal attention mask [seq_len, seq_len]
+            key_padding_mask: Padding mask [batch, seq_len]
+            past_key_value: Cached (k_latent, v_latent) from previous step
+            use_cache: Whether to return KV cache
+
+        Returns:
+            MLAOutput with hidden_states and optional kv_cache
 
         NOTE: Pre-norm is applied in the block, not here.
         """
         seq_len, batch_size, _ = x.shape
         device = x.device
 
-        # Q, K, V projections
+        # Q projection (full rank)
         q = self.q_proj(x).view(seq_len, batch_size, self.num_heads, self.head_dim)
-        k = self.k_proj(x).view(seq_len, batch_size, self.num_heads, self.head_dim)
-        v = self.v_proj(x).view(seq_len, batch_size, self.num_heads, self.head_dim)
+
+        # KV compression to latent space (KEY INNOVATION: shared bottleneck)
+        kv_latent = self.kv_compress(x)  # [seq_len, batch, d_latent]
+
+        # Expand latent to full K and V
+        k = self.k_expand(kv_latent).view(seq_len, batch_size, self.num_heads, self.head_dim)
+        v = self.v_expand(kv_latent).view(seq_len, batch_size, self.num_heads, self.head_dim)
+
+        # Handle KV cache for inference
+        if past_key_value is not None:
+            past_k_latent, past_v_latent = past_key_value
+            # Expand past latents
+            past_k = self.k_expand(past_k_latent).view(-1, batch_size, self.num_heads, self.head_dim)
+            past_v = self.v_expand(past_v_latent).view(-1, batch_size, self.num_heads, self.head_dim)
+
+            # Concatenate with current K/V
+            k = torch.cat([past_k, k], dim=0)
+            v = torch.cat([past_v, v], dim=0)
+
+            # Update latent cache
+            if use_cache:
+                kv_latent = torch.cat([past_k_latent, kv_latent], dim=0)
+
+        # Optionally cast KV latent to FP8 for cache (memory optimization)
+        if self.use_fp8_kv and use_cache:
+            # Only cast to FP8 if supported (CUDA with compute capability >= 8.9)
+            if hasattr(torch, 'float8_e4m3fn') and device.type == 'cuda':
+                kv_latent_cached = kv_latent.to(torch.float8_e4m3fn)
+            else:
+                kv_latent_cached = kv_latent
+        else:
+            kv_latent_cached = kv_latent if use_cache else None
 
         # Build or update RoPE cache
-        self._update_rope_cache(seq_len, device)
+        full_seq_len = k.shape[0]  # May be longer than seq_len if using cache
+        self._update_rope_cache(full_seq_len, device)
 
-        # Apply RoPE to Q, K
-        rope_q, rope_k = apply_rope(q, k, self.rope_cos[:seq_len], self.rope_sin[:seq_len])
+        # Apply RoPE to Q and K
+        # When using cache, Q and K may have different sequence lengths,
+        # so we need to apply RoPE separately
+        if past_key_value is not None:
+            # Apply RoPE separately with correct position indices
+            # Q gets positions for current tokens only
+            cos_q = self.rope_cos[:seq_len].unsqueeze(1).unsqueeze(1)
+            sin_q = self.rope_sin[:seq_len].unsqueeze(1).unsqueeze(1)
+            q1, q2 = q.split(self.head_dim // 2, dim=-1)
+            rope_q = torch.cat([q1 * cos_q - q2 * sin_q, q1 * sin_q + q2 * cos_q], dim=-1)
+
+            # K gets positions for all tokens (past + current)
+            cos_k = self.rope_cos[:full_seq_len].unsqueeze(1).unsqueeze(1)
+            sin_k = self.rope_sin[:full_seq_len].unsqueeze(1).unsqueeze(1)
+            k1, k2 = k.split(self.head_dim // 2, dim=-1)
+            rope_k = torch.cat([k1 * cos_k - k2 * sin_k, k1 * sin_k + k2 * cos_k], dim=-1)
+        else:
+            # No cache - Q and K have same length, use standard apply_rope
+            rope_q, rope_k = apply_rope(q, k, self.rope_cos[:seq_len], self.rope_sin[:seq_len])
 
         # Reshape for attention: [batch, num_heads, seq_len, head_dim]
         rope_q = rope_q.permute(1, 2, 0, 3)
@@ -103,4 +208,32 @@ class MLAAttention(nn.Module):
         out = self.out_proj(out)
         out = self.out_dropout(out)
 
-        return out
+        # Prepare KV cache (store latent, not full K/V - this is the memory savings!)
+        kv_cache = (kv_latent_cached, kv_latent_cached) if use_cache else None
+
+        return MLAOutput(hidden_states=out, kv_cache=kv_cache)
+
+    def estimate_kv_cache_size(self, batch_size: int, seq_len: int) -> Tuple[int, float]:
+        """
+        Estimate KV cache memory in bytes.
+
+        With MLA, cache stores latent KV at d_latent instead of full d_model.
+        This is the key memory saving.
+
+        Args:
+            batch_size: Batch size
+            seq_len: Sequence length
+
+        Returns:
+            (cache_bytes, compression_ratio)
+        """
+        # Latent cache: batch * seq * d_latent * 2 (K and V share same latent)
+        dtype_size = 1 if self.use_fp8_kv else 2  # FP8 or FP16
+        cache_bytes = batch_size * seq_len * self.d_latent * 2 * dtype_size
+
+        # Compare to non-MLA cache (full K/V storage)
+        full_cache_bytes = batch_size * seq_len * self.num_heads * self.head_dim * 2 * dtype_size
+
+        compression_ratio = full_cache_bytes / cache_bytes
+
+        return cache_bytes, compression_ratio

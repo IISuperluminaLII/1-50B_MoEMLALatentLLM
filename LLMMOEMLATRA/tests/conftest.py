@@ -19,8 +19,20 @@ from src.data.domain_mixer import Domain
 
 @pytest.fixture
 def device():
-    """Get available device (CUDA if available, else CPU)."""
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    """Get available device (CUDA if available and compatible, else CPU)."""
+    # Check if CUDA is available
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+
+    # Check if CUDA device is compatible with current PyTorch
+    try:
+        # Try to create a small tensor on CUDA to test compatibility
+        test_tensor = torch.zeros(1, device='cuda')
+        del test_tensor
+        return torch.device("cuda")
+    except (RuntimeError, AssertionError):
+        # CUDA device not compatible (e.g., Blackwell sm_120 with old PyTorch)
+        return torch.device("cpu")
 
 
 @pytest.fixture

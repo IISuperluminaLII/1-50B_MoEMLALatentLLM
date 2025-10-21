@@ -63,21 +63,51 @@ V = Linear(KV_latent, num_heads * head_dim)    # Expand for attention
 
 ### Implementation
 
-See [`src/mla/flash_mla_wrapper.py`](../src/mla/flash_mla_wrapper.py):
+MLA is implemented in two places:
+
+1. **Core model implementation** ([`src/model/mla.py`](../src/model/mla.py)) - Used by `DeepSeekV3Model`:
+
+```python
+class MLAAttention(nn.Module):
+    def __init__(self, d_model, num_heads, d_latent, ...):
+        # Q projection (full rank)
+        self.q_proj = Linear(d_model, d_model)
+
+        # KV compression to latent space (shared bottleneck)
+        self.kv_compress = Linear(d_model, d_latent)
+
+        # Separate expansion from latent to full K and V
+        self.k_expand = Linear(d_latent, d_model)
+        self.v_expand = Linear(d_latent, d_model)
+```
+
+2. **FlashMLA wrapper** ([`src/mla/flash_mla_wrapper.py`](../src/mla/flash_mla_wrapper.py)) - Optimized CUDA kernel interface:
 
 ```python
 class MultiHeadLatentAttention(nn.Module):
-    def __init__(self, d_model=7168, d_latent=1536, ...):
-        # Q projection (full rank)
-        self.q_proj = Linear(d_model, num_heads * head_dim)
-
-        # KV compression
-        self.kv_compress = Linear(d_model, d_latent)  # Bottleneck
-
-        # KV expansion (from latent)
-        self.k_expand = Linear(d_latent, num_heads * head_dim)
-        self.v_expand = Linear(d_latent, num_heads * head_dim)
+    # Same architecture as above, plus:
+    # - FlashMLA kernel integration (when available)
+    # - CPU fallback when CUDA unavailable
+    # - Batch-first tensor format (batch, seq, d_model)
 ```
+
+**Note:** `DeepSeekV3Model` uses `MLAAttention` from `src/model/mla.py`. The wrapper is available for standalone use or future integration.
+
+### KV Cache Format
+
+The MLA implementation stores **latent** K/V in cache, not the full expanded tensors:
+
+```python
+# Cache shape: (seq_len, batch, d_latent)  ← Compressed!
+# NOT:         (seq_len, batch, num_heads, head_dim)  ← Standard attention
+
+# Memory savings example (d_model=7168, d_latent=1536, num_heads=128):
+# Standard cache: seq × batch × 128 × 56 × 2 bytes = seq × batch × 14,336 bytes
+# MLA cache:      seq × batch × 1536 × 2 bytes      = seq × batch × 3,072 bytes
+# Compression:    ~4.7× reduction
+```
+
+Optional FP8 quantization (`use_fp8_kv=True`) further reduces memory by 2×.
 
 ### FlashMLA Kernel
 
@@ -87,7 +117,7 @@ The official FlashMLA kernel fuses:
 3. Attention computation
 4. FP8 quantization (for cache)
 
-This avoids materializing full K/V in memory.
+This avoids materializing full K/V in memory. Currently, `MLAAttention` provides a pure PyTorch fallback; FlashMLA integration is available via the wrapper.
 
 ## DeepSeekMoE
 
@@ -143,13 +173,33 @@ Instead of adding a loss term, bias the router against overloaded experts:
 
 ```python
 # Track expert loads via EMA
-expert_loads = EMA(expert_loads, current_loads)
+expert_loads = EMA(expert_loads, current_loads, decay=router_bias_decay)
 
 # Bias router logits
 router_logits = router_logits - expert_loads
 ```
 
 Overloaded experts get penalized, naturally balancing load without extra loss.
+
+#### Configuration
+
+Enable aux-loss-free balancing in your config:
+
+```json
+{
+  "moe": {
+    "use_aux_loss_free": true,
+    "router_aux_loss_weight": 0.0,
+    "router_bias_decay": 0.99
+  }
+}
+```
+
+- `use_aux_loss_free`: Enable DeepSeek V3's bias-based balancing
+- `router_aux_loss_weight`: Set to 0.0 when using aux-loss-free (or keep small value for hybrid)
+- `router_bias_decay`: EMA decay for bias tracking (0.99 recommended, higher = slower adaptation)
+
+The model will automatically apply dynamic bias updates during training to balance expert loads.
 
 ### Expert Parallelism with DeepEP
 
@@ -163,6 +213,14 @@ MoE requires all-to-all communication to route tokens to experts across GPUs.
 - Fused operations to reduce overhead
 
 See [`src/moe/deepseek_moe.py`](../src/moe/deepseek_moe.py) for integration.
+
+**Implementation:** The model uses `DeepSeekMoE` from `src/moe/deepseek_moe.py` which includes:
+- Full aux-loss-free routing with configurable bias decay
+- DeepEP integration with graceful fallback when unavailable
+- Shared expert support for improved stability
+- Comprehensive metrics (entropy, utilization, load imbalance)
+
+All MoE blocks in `DeepSeekV3Model` now use this richer implementation, replacing the simple `TopKMoE` helper.
 
 ## Model Parameters
 
