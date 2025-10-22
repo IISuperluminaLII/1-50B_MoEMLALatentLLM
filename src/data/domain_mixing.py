@@ -421,6 +421,13 @@ class DomainMixer:
         """
         Apply domain mixing to create a balanced dataset.
 
+        Uses remainder redistribution to ensure the total document count
+        matches the target size exactly, distributing leftover documents
+        to domains with the highest fractional parts after floor division.
+
+        This prevents silent document loss due to integer rounding, as
+        described in the DoReMi pipeline specification (Xie et al., 2023).
+
         Args:
             documents: Input documents to mix
             target_size: Target number of documents (None = use all)
@@ -431,20 +438,80 @@ class DomainMixer:
         # Step 1: Classify all documents into domains
         domain_buckets = self.classify_documents(documents)
 
-        # Step 2: Calculate target counts per domain
+        # Step 2: Calculate target counts per domain with remainder redistribution
         total_docs = target_size or len(documents)
+
+        # Floor division for initial allocation
         target_counts = {
             domain: int(total_docs * weight)
             for domain, weight in self.domain_weights.weights.items()
         }
 
-        # Step 3: Sample from each domain according to weights
+        # Calculate remainder from floor division
+        allocated = sum(target_counts.values())
+        remainder = total_docs - allocated
+
+        # Redistribute remainder to domains with highest fractional parts
+        if remainder > 0:
+            fractional_parts = {
+                domain: (total_docs * weight) - target_counts[domain]
+                for domain, weight in self.domain_weights.weights.items()
+            }
+            # Sort by fractional part descending
+            sorted_domains = sorted(
+                fractional_parts.items(),
+                key=lambda x: x[1],
+                reverse=True
+            )
+
+            # Add 1 to top domains until remainder is distributed
+            for i in range(remainder):
+                domain = sorted_domains[i][0]
+                target_counts[domain] += 1
+
+        # Step 3: Handle domains with no documents - redistribute their allocation
+        # to domains that do have documents
+        domains_with_docs = {d: target_counts[d] for d in target_counts if domain_buckets.get(d, [])}
+        domains_without_docs = {d: target_counts[d] for d in target_counts if not domain_buckets.get(d, [])}
+
+        # Redistribute documents from empty domains to non-empty ones
+        unallocated = sum(domains_without_docs.values())
+        if unallocated > 0 and domains_with_docs:
+            # Calculate weights for redistribution (proportional to existing allocation)
+            total_allocated_to_available = sum(domains_with_docs.values())
+
+            if total_allocated_to_available > 0:
+                # Redistribute proportionally
+                for domain in domains_with_docs:
+                    proportion = domains_with_docs[domain] / total_allocated_to_available
+                    additional = int(unallocated * proportion)
+                    target_counts[domain] += additional
+
+                # Handle any remainder from floor division
+                remaining = unallocated - sum(int(unallocated * (domains_with_docs[d] / total_allocated_to_available))
+                                             for d in domains_with_docs)
+                if remaining > 0:
+                    # Give remaining docs to domain with highest allocation
+                    top_domain = max(domains_with_docs.keys(), key=lambda d: domains_with_docs[d])
+                    target_counts[top_domain] += remaining
+            else:
+                # All domains have zero allocation but we have unallocated docs
+                # Distribute equally among available domains
+                per_domain = unallocated // len(domains_with_docs)
+                remainder = unallocated % len(domains_with_docs)
+
+                for i, domain in enumerate(domains_with_docs.keys()):
+                    target_counts[domain] += per_domain
+                    if i < remainder:
+                        target_counts[domain] += 1
+
+        # Step 4: Sample from each domain according to adjusted weights
         mixed_documents = []
 
         for domain, target_count in target_counts.items():
             available_docs = domain_buckets.get(domain, [])
 
-            if not available_docs:
+            if not available_docs or target_count == 0:
                 continue
 
             # Sample with replacement if target > available
@@ -455,7 +522,7 @@ class DomainMixer:
 
             mixed_documents.extend(sampled)
 
-        # Step 4: Shuffle final mix
+        # Step 5: Shuffle final mix
         random.shuffle(mixed_documents)
 
         return mixed_documents

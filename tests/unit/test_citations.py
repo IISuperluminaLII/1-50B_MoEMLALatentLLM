@@ -361,3 +361,93 @@ class TestCitationUsage:
         broder_pdfs = list((citations_root / "04_Deduplication").glob("*Broder*.pdf"))
         assert len(broder_pdfs) > 0, \
             "Broder MinHash paper not found in 04_Deduplication/ (referenced for deduplication)"
+
+    def test_documentation_arxiv_ids_are_valid(self, citations_root: Path):
+        """
+        Scan documentation files for arXiv IDs and verify they exist in citation tracking.
+
+        This test catches stale or incorrect arXiv IDs in documentation that don't
+        match the curated citation database, preventing future misattribution issues.
+        """
+        # Load tracking files
+        paper_ids_file = citations_root / "paper_ids.txt"
+        paper_metadata_file = citations_root / "paper_metadata.txt"
+
+        # Collect all tracked IDs
+        tracked_ids = set()
+
+        # From paper_ids.txt
+        if paper_ids_file.exists():
+            with open(paper_ids_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        match = re.match(r'(\d{4}\.\d{4,6})', line)
+                        if match:
+                            tracked_ids.add(match.group(1))
+
+        # From paper_metadata.txt
+        if paper_metadata_file.exists():
+            with open(paper_metadata_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        # Extract arXiv IDs from metadata if present
+                        arxiv_matches = re.findall(r'arXiv:(\d{4}\.\d{4,6})', line)
+                        tracked_ids.update(arxiv_matches)
+
+        # Documentation directories to scan
+        docs_root = citations_root.parent / "docs"
+        src_root = citations_root.parent / "src"
+
+        # Files to scan
+        files_to_scan = []
+
+        # Scan docs/
+        if docs_root.exists():
+            files_to_scan.extend(docs_root.glob("*.md"))
+
+        # Scan src/ for Python files with docstrings
+        if src_root.exists():
+            files_to_scan.extend(src_root.rglob("*.py"))
+
+        # Also scan pdf_citations/README.md
+        if (citations_root / "README.md").exists():
+            files_to_scan.append(citations_root / "README.md")
+
+        # Pattern to find arXiv references in text
+        arxiv_pattern = re.compile(r'arXiv:(\d{4}\.\d{4,6})')
+
+        untracked_ids = {}  # {arxiv_id: [files where found]}
+
+        for file_path in files_to_scan:
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+
+                # Find all arXiv IDs in this file
+                found_ids = arxiv_pattern.findall(content)
+
+                for arxiv_id in found_ids:
+                    if arxiv_id not in tracked_ids:
+                        if arxiv_id not in untracked_ids:
+                            untracked_ids[arxiv_id] = []
+                        untracked_ids[arxiv_id].append(str(file_path.relative_to(citations_root.parent)))
+
+            except Exception as e:
+                # Skip files that can't be read
+                continue
+
+        if untracked_ids:
+            error_msg = "Found arXiv IDs in documentation that are NOT in paper_ids.txt or paper_metadata.txt:\n\n"
+            for arxiv_id, files in sorted(untracked_ids.items()):
+                error_msg += f"  arXiv:{arxiv_id}\n"
+                for file in files:
+                    error_msg += f"    - {file}\n"
+                error_msg += "\n"
+
+            error_msg += "Action: Either:\n"
+            error_msg += "  1. Add these IDs to paper_ids.txt and download the PDFs, OR\n"
+            error_msg += "  2. Correct the arXiv IDs in the documentation to match tracked papers\n"
+
+            pytest.fail(error_msg)
