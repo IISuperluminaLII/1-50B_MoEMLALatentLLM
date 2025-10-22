@@ -46,10 +46,19 @@ class TestCitations:
                         ids.append(match.group(1))
         return ids
 
-    @pytest.fixture
-    def paper_metadata(self, citations_root: Path) -> List[Dict[str, str]]:
-        """Load non-arXiv paper metadata from paper_metadata.txt."""
-        metadata_file = citations_root / "paper_metadata.txt"
+    def _parse_metadata_file(self, metadata_file: Path) -> List[Dict[str, str]]:
+        """
+        Parse metadata file and return list of paper metadata dicts.
+
+        Args:
+            metadata_file: Path to paper_metadata.txt
+
+        Returns:
+            List of paper metadata dictionaries
+
+        Raises:
+            pytest.fail: If metadata is malformed
+        """
         if not metadata_file.exists():
             return []
 
@@ -79,6 +88,12 @@ class TestCitations:
                         'filename': parts[7],
                     })
         return papers
+
+    @pytest.fixture
+    def paper_metadata(self, citations_root: Path) -> List[Dict[str, str]]:
+        """Load non-arXiv paper metadata from paper_metadata.txt."""
+        metadata_file = citations_root / "paper_metadata.txt"
+        return self._parse_metadata_file(metadata_file)
 
     @pytest.fixture
     def all_pdfs(self, citations_root: Path) -> Set[Path]:
@@ -279,7 +294,7 @@ class TestCitations:
                 "\n".join(f"  - {f}" for f in missing_folders)
             )
 
-    def test_malformed_metadata_raises_error(self, citations_root: Path):
+    def test_malformed_metadata_raises_error(self):
         """Test that malformed metadata entries trigger explicit failures."""
         import tempfile
         import os
@@ -292,24 +307,9 @@ class TestCitations:
             tmp_path = tmp.name
 
         try:
-            # The paper_metadata fixture logic should detect malformed entries
-            # Simulate the fixture behavior
-            malformed_detected = False
-            with open(tmp_path, 'r') as f:
-                for line_num, line in enumerate(f, start=1):
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        parts = [p.strip() for p in line.split('|')]
-                        if len(parts) != 8:
-                            # Malformed entry detected!
-                            malformed_detected = True
-                            # Verify the error message would be informative
-                            expected_msg = f"Malformed metadata entry at {tmp_path}:{line_num}"
-                            assert "Malformed metadata entry" in expected_msg
-                            break
-
-            # Verify that we did detect the malformed entry
-            assert malformed_detected, "Malformed metadata entry was not detected!"
+            # Use the actual parsing logic from the fixture
+            with pytest.raises(pytest.fail.Exception, match="Malformed metadata entry"):
+                self._parse_metadata_file(Path(tmp_path))
 
         finally:
             # Clean up

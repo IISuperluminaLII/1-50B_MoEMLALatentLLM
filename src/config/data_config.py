@@ -88,9 +88,15 @@ class QualityFilterConfig:
 class DomainMixingConfig:
     """Configuration for domain mixing stage."""
     enabled: bool = True
-    composition: str = "deepseek_v3"  # deepseek_v3, llama3, balanced, or custom
+    composition: str = "deepseek_v3"  # deepseek_v3, llama3, balanced, doremi, or custom
     target_tokens: Optional[int] = None  # Target corpus size in tokens
     shuffle_output: bool = True
+
+    # DoReMi-specific parameters
+    doremi_num_iterations: int = 1  # Number of DoReMi optimization iterations
+    doremi_temperature: float = 0.5  # Temperature for Group DRO reweighting
+    doremi_learning_rate: float = 0.01  # Learning rate for weight updates
+    doremi_loss_feedback_path: Optional[str] = None  # Path to JSON with domain losses
 
 
 @dataclass
@@ -265,6 +271,10 @@ class DataPreprocessingConfig:
             "composition": self.domain_mixing.composition,
             "target_tokens": self.domain_mixing.target_tokens,
             "shuffle_output": self.domain_mixing.shuffle_output,
+            "num_iterations": self.domain_mixing.doremi_num_iterations,
+            "temperature": self.domain_mixing.doremi_temperature,
+            "learning_rate": self.domain_mixing.doremi_learning_rate,
+            "loss_feedback_path": self.domain_mixing.doremi_loss_feedback_path,
         }
 
     def print_summary(self):

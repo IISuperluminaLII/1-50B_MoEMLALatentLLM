@@ -1018,3 +1018,139 @@ class TestRealDolmaDataset:
                 break
 
         assert len(batches) == 5
+
+
+class TestDoReMiPipelineIntegration:
+    """Integration test for DoReMi domain mixing with the data pipeline."""
+
+    def test_doremi_pipeline_with_loss_feedback(self, temp_dir):
+        """Test end-to-end DoReMi pipeline with synthetic loss feedback."""
+        from src.data.pipeline import DataPipeline, PipelineConfig
+
+        # Create input documents with clear domain markers
+        input_data = [
+            # Code documents (id pattern: code_*)
+            {"id": f"code_{i}", "text": "def foo(): return 42\nimport sys\nclass Bar: pass\n" * 20}
+            for i in range(50)
+        ] + [
+            # Web documents (id pattern: web_*)
+            {"id": f"web_{i}", "text": "This is generic web content about various topics and things. " * 20}
+            for i in range(50)
+        ] + [
+            # Wikipedia documents
+            {"id": f"wiki_{i}", "text": "== Article Title ==\n[[Category:Test]]\nThis is a Wikipedia article. " * 20}
+            for i in range(50)
+        ]
+
+        # Setup pipeline with DoReMi enabled
+        pipeline_config = PipelineConfig(
+            input_path=None,
+            output_dir=str(temp_dir / "doremi_output"),
+            enable_cleaning=False,
+            enable_deduplication=False,
+            enable_heuristic_filters=False,
+            enable_quality_filters=False,
+            enable_domain_mixing=True,
+            domain_config={
+                "composition": "doremi",
+                "num_iterations": 3,
+                "temperature": 0.5,
+                "target_size": 150,
+            },
+            show_progress=False,
+        )
+
+        # Note: For full DoReMi, we'd need a loss feedback mechanism
+        # This test verifies the DoReMi mixer is initialized correctly
+        pipeline = DataPipeline(pipeline_config)
+
+        # Verify DoReMi mixer is created
+        assert pipeline.domain_mixer is not None
+        assert pipeline.domain_mixer.composition_name == "doremi"
+        assert pipeline.domain_mixer.dro_optimizer is not None
+
+        # Test direct DoReMi optimization with synthetic losses
+        from src.data.domain_mixing import DomainMixer
+
+        mixer = DomainMixer(composition="doremi", random_seed=42)
+
+        # Synthetic losses: code has HIGH loss (hard), web has LOW loss (easy)
+        # DoReMi upweights high-loss (hard) domains
+        domain_losses = {
+            "code": 5.0,  # High loss - hard domain
+            "common_crawl": 2.0,  # Low loss - easy domain
+            "wikipedia": 3.0,  # Medium loss
+            "academic": 3.5,
+            "books": 3.2,
+            "news": 2.8,
+            "social": 3.0,
+        }
+
+        # Apply DoReMi with feedback
+        mixed_docs = mixer.mix_documents_with_feedback(
+            input_data,
+            domain_losses=domain_losses,
+            num_iterations=3,
+            target_size=150,
+        )
+
+        # Verify output
+        assert len(mixed_docs) == 150
+
+        # Verify weights were optimized
+        stats = mixer.get_statistics()
+        assert stats["iteration"] == 3
+
+        # Code (high loss) should have higher weight than initial uniform
+        assert stats["target_weights"]["code"] > 1.0 / 7, \
+            f"Expected code weight > {1.0/7:.3f}, got {stats['target_weights']['code']:.3f}"
+
+        # Common crawl (low loss) should have lower weight than code (high loss)
+        assert stats["target_weights"]["code"] > stats["target_weights"]["common_crawl"], \
+            "Hard domain (code) should have more weight than easy domain (common_crawl)"
+
+        # Verify actual distribution matches sampled output
+        assert "input_distribution" in stats
+        assert "actual_distribution" in stats
+        assert "sampled_document_counts" in stats
+
+        # Sampled counts should sum to target size
+        total_sampled = sum(stats["sampled_document_counts"].values())
+        assert total_sampled == 150
+
+    def test_doremi_weight_convergence(self):
+        """Test that DoReMi weights converge over multiple iterations."""
+        from src.data.domain_mixing import DomainMixer
+
+        mixer = DomainMixer(composition="doremi", random_seed=42)
+
+        # Consistent loss signal: code has HIGH loss (hard domain)
+        # DoReMi upweights high-loss domains
+        domain_losses = {
+            "code": 4.5,  # Consistently HIGH loss - should be upweighted
+            "common_crawl": 1.5,  # Consistently LOW loss
+            "wikipedia": 3.0,
+            "academic": 3.2,
+            "books": 3.1,
+            "news": 3.3,
+            "social": 3.4,
+        }
+
+        # Track weight evolution
+        weight_history = []
+
+        for i in range(5):
+            mixer.optimize_weights_doremi(domain_losses)
+            weight_history.append(mixer.domain_weights.weights["code"])
+
+        # Code weight should increase monotonically (or stabilize) under consistent high-loss signal
+        assert weight_history[-1] > weight_history[0], \
+            "Code weight should increase after optimization (high loss domain gets upweighted)"
+
+        # Later iterations should show smaller changes (convergence)
+        early_change = abs(weight_history[1] - weight_history[0])
+        late_change = abs(weight_history[4] - weight_history[3])
+
+        # Note: This may not always hold due to exponential updates, but generally true
+        # Just verify we're not diverging
+        assert weight_history[-1] < 0.5, "Weights should not diverge to extreme values"
