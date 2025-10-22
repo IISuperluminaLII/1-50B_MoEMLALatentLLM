@@ -59,6 +59,7 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 
 2. ✅ **Zhou et al. (2025) - "Data × LLM"** (arXiv:2505.18458) → `07_Data_Practices/`
    - Critical paper referenced throughout pipeline code
+   - Note: First author is Xuanhe Zhou; cite as "Zhou et al." not "Li et al."
 
 3. ✅ **Joulin et al. (2016) - "FastText"** (arXiv:1607.01759) → `05_Quality_Filtering/`
    - Foundation paper for text classification quality filters
@@ -108,10 +109,10 @@ pytest tests/unit/test_citations.py
 
 The following modules reference papers that should be in this directory:
 
-- `src/data/pipeline.py` - References Li et al. (2025) arXiv:2505.18458
+- `src/data/pipeline.py` - References Zhou et al. (2025) arXiv:2505.18458
 - `src/data/deduplication.py` - References Lee et al. (2022), FED, LSHBloom
 - `src/data/quality_filters.py` - References FastText, KenLM papers
-- `src/data/heuristic_filters.py` - References Li et al., DCLM, The Pile
+- `src/data/heuristic_filters.py` - References Zhou et al., DCLM, The Pile
 - `docs/DATA_SANITIZATION_STATUS.md` - Lists all major references
 
 ---

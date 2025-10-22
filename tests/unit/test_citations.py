@@ -78,6 +78,17 @@ class TestCitations:
         """Find all PDF files in the citations directory."""
         return set(citations_root.rglob("*.pdf"))
 
+    @pytest.fixture
+    def arxiv_mapping(self, citations_root: Path) -> Dict[str, str]:
+        """Load arXiv ID to PDF filename mapping."""
+        mapping_file = citations_root / "arxiv_to_pdf_mapping.json"
+        if not mapping_file.exists():
+            return {}
+
+        import json
+        with open(mapping_file, 'r') as f:
+            return json.load(f)
+
     def test_paper_ids_file_exists(self, citations_root: Path):
         """Test that paper_ids.txt exists."""
         assert (citations_root / "paper_ids.txt").exists(), \
@@ -89,16 +100,25 @@ class TestCitations:
             assert re.match(r'^\d{4}\.\d{4,6}$', arxiv_id), \
                 f"Invalid arXiv ID format: {arxiv_id}"
 
-    def test_arxiv_pdfs_exist(self, citations_root: Path, paper_ids: List[str], all_pdfs: Set[Path]):
+    def test_arxiv_pdfs_exist(self, citations_root: Path, paper_ids: List[str], all_pdfs: Set[Path], arxiv_mapping: Dict[str, str]):
         """Test that all arXiv papers have corresponding PDFs."""
         missing_papers = []
 
         for arxiv_id in paper_ids:
-            # Search for PDF matching this arXiv ID in filename
-            matching_pdfs = [
-                pdf for pdf in all_pdfs
-                if arxiv_id in pdf.stem or arxiv_id in str(pdf)
-            ]
+            # First try to use the mapping file
+            if arxiv_id in arxiv_mapping:
+                expected_filename = arxiv_mapping[arxiv_id]
+                # Search for this specific filename in all PDFs
+                matching_pdfs = [
+                    pdf for pdf in all_pdfs
+                    if pdf.name == expected_filename
+                ]
+            else:
+                # Fall back to substring search for unmapped IDs
+                matching_pdfs = [
+                    pdf for pdf in all_pdfs
+                    if arxiv_id in pdf.stem or arxiv_id in str(pdf)
+                ]
 
             if not matching_pdfs:
                 missing_papers.append(arxiv_id)
@@ -181,7 +201,8 @@ class TestCitations:
         citations_root: Path,
         paper_ids: List[str],
         paper_metadata: List[Dict[str, str]],
-        all_pdfs: Set[Path]
+        all_pdfs: Set[Path],
+        arxiv_mapping: Dict[str, str]
     ):
         """Test that all PDFs have corresponding entries in paper_ids.txt or paper_metadata.txt."""
         # Build set of tracked filenames
@@ -191,7 +212,12 @@ class TestCitations:
         for paper in paper_metadata:
             tracked_filenames.add(paper['filename'])
 
-        # From arXiv IDs (partial matching)
+        # From arXiv mapping (exact filenames)
+        for arxiv_id in paper_ids:
+            if arxiv_id in arxiv_mapping:
+                tracked_filenames.add(arxiv_mapping[arxiv_id])
+
+        # From arXiv IDs (partial matching for unmapped IDs)
         arxiv_ids_set = set(paper_ids)
 
         orphan_pdfs = []
@@ -199,11 +225,11 @@ class TestCitations:
         for pdf in all_pdfs:
             filename = pdf.name
 
-            # Check if filename is in metadata
+            # Check if filename is in tracked set
             if filename in tracked_filenames:
                 continue
 
-            # Check if any arXiv ID is in the filename
+            # Check if any arXiv ID is in the filename (fallback for unmapped)
             has_arxiv_match = any(arxiv_id in filename for arxiv_id in arxiv_ids_set)
             if has_arxiv_match:
                 continue
@@ -269,6 +295,17 @@ class TestCitationUsage:
         """Get the pdf_citations root directory."""
         return Path(__file__).parent.parent.parent / "pdf_citations"
 
+    @pytest.fixture
+    def arxiv_mapping(self, citations_root: Path) -> Dict[str, str]:
+        """Load arXiv ID to PDF filename mapping."""
+        mapping_file = citations_root / "arxiv_to_pdf_mapping.json"
+        if not mapping_file.exists():
+            return {}
+
+        import json
+        with open(mapping_file, 'r') as f:
+            return json.load(f)
+
     def test_doremi_citation_exists(self, citations_root: Path):
         """Test that DoReMi paper (arXiv:2305.10429) exists in Domain Mixing folder."""
         doremi_pdfs = list((citations_root / "06_Domain_Mixing").glob("*DoReMi*.pdf"))
@@ -283,17 +320,35 @@ class TestCitationUsage:
         assert dclm_found, \
             "DCLM or KenLM paper not found in 05_Quality_Filtering/ (referenced in src/data/heuristic_filters.py)"
 
-    def test_li_et_al_citation_exists(self, citations_root: Path):
-        """Test that Li et al. (2025) Data × LLM paper exists."""
-        # Should be in 07_Data_Practices/ or 05_Quality_Filtering/
-        data_practices_pdfs = list((citations_root / "07_Data_Practices").glob("*.pdf"))
-        quality_pdfs = list((citations_root / "05_Quality_Filtering").glob("*.pdf"))
+    def test_zhou_et_al_citation_exists(self, citations_root: Path, arxiv_mapping: Dict[str, str]):
+        """Test that Zhou et al. (2025) Data × LLM paper exists (arXiv:2505.18458)."""
+        arxiv_id = "2505.18458"
 
-        all_pdfs = data_practices_pdfs + quality_pdfs
-        li_found = any("LLM" in pdf.name and "DATA" in pdf.name for pdf in all_pdfs)
+        # Check mapping file first
+        if arxiv_id in arxiv_mapping:
+            expected_filename = arxiv_mapping[arxiv_id]
+            pdf_path = citations_root / "07_Data_Practices" / expected_filename
 
-        assert li_found, \
-            "Li et al. 'Data × LLM' paper not found (referenced extensively in pipeline code)"
+            assert pdf_path.exists(), \
+                f"Zhou et al. 'Data × LLM' paper not found at expected path: {pdf_path}\n" \
+                f"Expected filename from mapping: {expected_filename}"
+
+            # Verify the filename contains "Zhou" (first author)
+            assert "Zhou" in expected_filename, \
+                f"PDF filename should contain 'Zhou' (first author), but got: {expected_filename}\n" \
+                f"This paper should be cited as 'Zhou et al.' not 'Li et al.'"
+        else:
+            # Fallback: search for the paper
+            data_practices_pdfs = list((citations_root / "07_Data_Practices").glob("*.pdf"))
+
+            # Look for Zhou and the paper title keywords
+            zhou_found = any("Zhou" in pdf.name and ("LLM" in pdf.name or "DATA" in pdf.name)
+                           for pdf in data_practices_pdfs)
+
+            assert zhou_found, \
+                f"Zhou et al. 'Data × LLM' paper not found (arXiv:{arxiv_id})\n" \
+                f"Referenced extensively in pipeline code\n" \
+                f"Note: Should be cited as 'Zhou et al.' (first author: Xuanhe Zhou), not 'Li et al.'"
 
     def test_fasttext_citation_exists(self, citations_root: Path):
         """Test that FastText paper (arXiv:1607.01759) exists in Quality Filtering folder."""

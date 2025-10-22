@@ -8,7 +8,7 @@ References:
     Xie et al. (2023). "DoReMi: Optimizing Data Mixtures Speeds Up Language
     Model Pretraining." arXiv:2305.10429
 
-    Li et al. (2025). "Data × LLM: From Principles to Practices."
+    Zhou et al. (2025). "Data × LLM: From Principles to Practices."
     arXiv:2505.18458, Section on domain composition
 """
 

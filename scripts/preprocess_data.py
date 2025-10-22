@@ -28,7 +28,7 @@ Usage:
         --composition llama3
 
 References:
-    Li et al. (2025). "Data × LLM: From Principles to Practices."
+    Zhou et al. (2025). "Data × LLM: From Principles to Practices."
     arXiv:2505.18458
 
     DeepSeek-AI (2024). "DeepSeek-V3 Technical Report."
@@ -72,7 +72,7 @@ Examples:
       --composition llama3
 
 References:
-  Li et al. (2025), arXiv:2505.18458
+  Zhou et al. (2025), arXiv:2505.18458
   DeepSeek-V3 (2024), arXiv:2412.19437
   Lee et al. (2022), arXiv:2107.06499
         """

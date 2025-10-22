@@ -5,7 +5,7 @@ Implements rule-based filters to remove low-quality documents based on
 structural and statistical properties.
 
 References:
-    Li et al. (2025). "Data × LLM: From Principles to Practices."
+    Zhou et al. (2025). "Data × LLM: From Principles to Practices."
     arXiv:2505.18458, Section 3.1.2
 
     Nguyen et al. (2024). "DCLM: DataComp for Language Models."
