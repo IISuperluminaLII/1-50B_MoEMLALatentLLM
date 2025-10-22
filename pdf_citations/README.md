@@ -20,6 +20,7 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 
 #### 01_Architecture
 - ✅ DeepSeek-AI et al. (2024) - "DeepSeek-V3 Technical Report" (arXiv:2412.19437)
+- ✅ Fedus et al. (2021) - "Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity" (arXiv:2101.03961)
 - ✅ Su et al. (2021) - "RoFormer: Enhanced Transformer with Rotary Position Embedding" (arXiv:2104.09864)
 - ✅ Barbero et al. (2024) - "Round and Round We Go! What makes Rotary Positional Encodings useful?" (arXiv:2410.06205)
 
@@ -59,7 +60,7 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 
 ### Citation Status Summary
 
-**Total Papers:** 25 PDFs across 7 categories (24 arXiv + 1 non-arXiv)
+**Total Papers:** 26 PDFs across 7 categories (25 arXiv + 1 non-arXiv)
 - ✅ All critical SOTA pipeline citations are now present
 - ✅ All code-referenced papers have been downloaded and organized
 - ✅ Non-arXiv papers tracked in `paper_metadata.txt`
@@ -101,6 +102,10 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 10. ✅ **Barbero et al. (2024) - "Round and Round We Go!"** (arXiv:2410.06205) → `01_Architecture/`
     - Analysis of what makes Rotary Positional Encodings useful
 
+11. ✅ **Fedus et al. (2021) - "Switch Transformers"** (arXiv:2101.03961) → `01_Architecture/`
+    - Scaling to Trillion Parameter Models with Simple and Efficient Sparsity
+    - Referenced in MoE load balancing loss implementation (`src/model/moe.py`)
+
 ### Notes
 
 - **FineWeb-Edu**: Confirmed to be part of the main FineWeb paper (arXiv:2406.17557), not a separate citation
@@ -109,10 +114,12 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 
 ## How to Update Citations
 
-1. Add arXiv IDs to `paper_ids.txt`
-2. Run `python download_papers.py` to download PDFs
-3. Manually organize PDFs into appropriate subdirectories
-4. Update this README
+1. Ensure the `arxiv` package is installed: `pip install arxiv>=2.0.0` (or install from `requirements.txt`)
+2. Add arXiv IDs to `paper_ids.txt`
+3. Run `python download_papers.py paper_ids.txt` to download PDFs
+4. Manually organize PDFs into appropriate subdirectories
+5. Update `arxiv_to_pdf_mapping.json` with new entries
+6. Update this README
 
 ## Paper ID Format
 
@@ -127,7 +134,7 @@ The `paper_ids.txt` file contains arXiv identifiers (without the "arXiv:" prefix
 
 All tracked arXiv IDs in `paper_ids.txt` have been downloaded and mapped:
 
-- ✅ All 24 arXiv papers downloaded and organized by category
+- ✅ All 25 arXiv papers downloaded and organized by category
 - ✅ All papers referenced in code have corresponding PDFs
 - ✅ Mapping file (`arxiv_to_pdf_mapping.json`) is complete and up-to-date
 - ✅ No missing or outstanding citation downloads
@@ -140,6 +147,16 @@ To verify all cited papers have matching PDFs, run:
 ```bash
 pytest tests/unit/test_citations.py
 ```
+
+The citation validation test (`test_documentation_arxiv_ids_are_valid`) scans the following for arXiv references:
+- Root-level markdown files (`*.md`)
+- All documentation files (`docs/**/*.md`)
+- Source code files (`src/**/*.py`)
+- Scripts (`scripts/*.py`)
+- Configuration files (`configs/**/*.{json,yaml,yml,md}`)
+- This README file
+
+Any arXiv ID found in these files must exist in `paper_ids.txt` or `paper_metadata.txt`.
 
 ## References in Code
 

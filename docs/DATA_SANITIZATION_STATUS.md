@@ -13,7 +13,7 @@ Implementation of a comprehensive data sanitization pipeline for LLM training da
 ### Phase 1: Preliminary Text Cleaning (COMPLETE)
 
 **Implementation**: [src/data/preliminary_cleaning.py](src/data/preliminary_cleaning.py)
-**Tests**: [tests/data/test_preliminary_cleaning.py](tests/data/test_preliminary_cleaning.py)
+**Tests**: [tests/unit/test_pipeline.py](tests/unit/test_pipeline.py), [tests/integration/test_dolma_integration.py](tests/integration/test_dolma_integration.py)
 **Reference**: Zhou et al. (2025), arXiv:2505.18458, Section 3.1.1
 
 #### Features Implemented:
@@ -53,7 +53,7 @@ stats = cleaner.get_stats(text, cleaned)
 ### Phase 2: MinHash LSH Deduplication (COMPLETE)
 
 **Implementation**: [src/data/deduplication.py](src/data/deduplication.py) (420 lines)
-**Tests**: [tests/data/test_deduplication.py](tests/data/test_deduplication.py)
+**Tests**: [tests/unit/test_pipeline.py](tests/unit/test_pipeline.py), [tests/integration/test_dolma_integration.py](tests/integration/test_dolma_integration.py)
 **Reference**: Lee et al. (2022), arXiv:2107.06499
 
 #### Features Implemented:
@@ -386,22 +386,19 @@ kenlm                    # Perplexity scoring (install from source)
 ## Testing Infrastructure
 
 ### Test Files Created:
-- [tests/data/__init__.py](tests/data/__init__.py) - Module initialization
-- [tests/data/test_preliminary_cleaning.py](tests/data/test_preliminary_cleaning.py) - 20+ tests
-- [tests/data/test_deduplication.py](tests/data/test_deduplication.py) - 40+ tests
-
-### Test Runner:
+- [tests/unit/test_pipeline.py](tests/unit/test_pipeline.py) - Pipeline unit tests
+- [tests/integration/test_dolma_integration.py](tests/integration/test_dolma_integration.py) - Integration tests for data pipeline
 - [scripts/run_data_tests.py](scripts/run_data_tests.py) - Quick smoke test runner
 
 ### Running Tests:
 
 ```bash
-# Run all data tests with pytest
-pytest tests/data/ -v --cov=src/data --cov-report=html
+# Run all data pipeline tests with pytest
+pytest tests/unit/test_pipeline.py -v
+pytest tests/integration/test_dolma_integration.py -v
 
-# Run specific module tests
-pytest tests/data/test_preliminary_cleaning.py -v
-pytest tests/data/test_deduplication.py -v
+# Run with coverage
+pytest tests/unit/test_pipeline.py tests/integration/test_dolma_integration.py -v --cov=src/data --cov-report=html
 
 # Quick smoke tests
 python scripts/run_data_tests.py
@@ -429,7 +426,7 @@ python scripts/run_data_tests.py
    arXiv:2411.04257 | Memory optimization
 
 ### Text Cleaning & Filtering:
-4. **Zhou et al. (2025)** - "Data × LLM: From Principles to Practices"
+4. **Zhou et al. (2025)** - "A Survey of LLM × DATA"
    arXiv:2505.18458 | Complete sanitization pipeline, SoftDeDup
 
 5. **Yungi Kim et al. (2024)** - "Rethinking KenLM: Good and Bad Model Ensembles"

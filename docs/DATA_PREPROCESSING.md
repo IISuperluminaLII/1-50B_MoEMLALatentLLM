@@ -417,7 +417,7 @@ All implementations follow specifications from peer-reviewed papers:
 1. **Lee et al. (2022)** - "Deduplicating Training Data Makes Language Models Better" (arXiv:2107.06499)
    - MinHash LSH deduplication algorithm
 
-2. **Zhou et al. (2025)** - "Data × LLM: From Principles to Practices" (arXiv:2505.18458)
+2. **Zhou et al. (2025)** - "A Survey of LLM × DATA" (arXiv:2505.18458)
    - Preliminary cleaning principles
 
 3. **DeepSeek-AI (2024)** - "DeepSeek-V3 Technical Report" (arXiv:2412.19437)
