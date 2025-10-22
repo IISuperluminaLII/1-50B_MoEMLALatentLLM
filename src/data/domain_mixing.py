@@ -37,13 +37,18 @@ DOMAIN_CATEGORIES = [
 PRESET_COMPOSITIONS = {
     "deepseek_v3": {
         # Based on DeepSeek-V3 technical report
-        "common_crawl": 0.45,
-        "code": 0.20,
-        "academic": 0.15,
-        "books": 0.10,
-        "wikipedia": 0.05,
-        "news": 0.03,
-        "social": 0.02,
+        # Documented composition: 92% natural language, 5% code, 3% math
+        # Natural language is aggregated from: common_crawl, wikipedia, books, news, social, academic
+        "common_crawl": 0.50,  # Primary NL source
+        "wikipedia": 0.15,     # Reference/encyclopedic NL
+        "books": 0.10,         # Literature NL
+        "academic": 0.08,      # Scientific/technical NL
+        "news": 0.05,          # News/journalism NL
+        "social": 0.04,        # Conversational NL
+        # Total NL = 0.92 (92%)
+        "code": 0.05,          # Code domain (5%)
+        # Note: Math is often mixed with academic papers or included in code
+        # For separate math domain, allocate 0.03 (3%) from academic budget
     },
     "llama3": {
         # Based on LLaMA-3 data composition

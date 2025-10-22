@@ -231,6 +231,129 @@ class TestPipelineStatsConsistency:
             assert stats.documents_deduplicated == 0
 
 
+class TestDeduplicationMethods:
+    """Test different deduplication methods (minhash, exact, both)."""
+
+    def test_deduplication_method_both(self):
+        """
+        Test that method='both' runs both MinHash and Exact deduplication.
+
+        This ensures the pipeline correctly applies near-duplicate removal (MinHash)
+        followed by exact-duplicate removal (SHA-256), as documented.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = PipelineConfig(
+                input_path="dummy.jsonl",
+                output_dir=tmpdir,
+                enable_cleaning=False,
+                enable_deduplication=True,
+                dedup_config={
+                    "method": "both",  # Run both MinHash and Exact
+                    "threshold": 0.8,
+                    "num_perm": 128,
+                    "n_gram": 13,
+                    "seed": 42,
+                },
+                enable_heuristic_filters=False,
+                enable_quality_filters=False,
+                enable_domain_mixing=False,
+                show_progress=False,
+            )
+
+            pipeline = DataPipeline(config)
+
+            # Create test data with:
+            # 1. Near-duplicates (similar but not exact)
+            # 2. Exact duplicates
+            # 3. Unique documents
+            input_data = [
+                {"text": "The quick brown fox jumps over the lazy dog.", "id": "doc_1"},
+                {"text": "The quick brown fox jumps over the lazy dog.", "id": "doc_2"},  # Exact duplicate of doc_1
+                {"text": "The quick brown fox jumps over a lazy dog.", "id": "doc_3"},   # Near-duplicate (threshold-dependent)
+                {"text": "Completely different unique content here.", "id": "doc_4"},
+                {"text": "Another totally unique document content.", "id": "doc_5"},
+                {"text": "Another totally unique document content.", "id": "doc_6"},     # Exact duplicate of doc_5
+            ]
+
+            stats = pipeline.process_and_save(input_data=input_data)
+
+            # Verify both deduplicators were instantiated
+            assert pipeline.deduplicator is not None, "MinHash deduplicator should be initialized"
+            assert pipeline.exact_deduplicator is not None, "Exact deduplicator should be initialized for 'both' method"
+
+            # Verify some documents were removed
+            assert stats.documents_deduplicated > 0, "Should have removed some duplicates"
+            assert stats.total_output_documents < stats.total_input_documents
+
+            # At minimum, the 2 exact duplicates should be removed
+            assert stats.documents_deduplicated >= 2, f"Should remove at least 2 exact duplicates, got {stats.documents_deduplicated}"
+
+    def test_deduplication_method_minhash_only(self):
+        """Test that method='minhash' only uses MinHash deduplication."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = PipelineConfig(
+                input_path="dummy.jsonl",
+                output_dir=tmpdir,
+                enable_cleaning=False,
+                enable_deduplication=True,
+                dedup_config={"method": "minhash"},
+                enable_heuristic_filters=False,
+                enable_quality_filters=False,
+                enable_domain_mixing=False,
+                show_progress=False,
+            )
+
+            pipeline = DataPipeline(config)
+
+            # Verify only MinHash deduplicator is initialized
+            assert pipeline.deduplicator is not None
+            assert pipeline.exact_deduplicator is None
+
+    def test_deduplication_method_exact_only(self):
+        """Test that method='exact' only uses exact deduplication."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = PipelineConfig(
+                input_path="dummy.jsonl",
+                output_dir=tmpdir,
+                enable_cleaning=False,
+                enable_deduplication=True,
+                dedup_config={"method": "exact"},
+                enable_heuristic_filters=False,
+                enable_quality_filters=False,
+                enable_domain_mixing=False,
+                show_progress=False,
+            )
+
+            pipeline = DataPipeline(config)
+
+            # Verify only Exact deduplicator is used
+            assert pipeline.deduplicator is not None
+            assert pipeline.exact_deduplicator is None
+
+            # Also verify it's actually an ExactDeduplicator instance
+            from src.data.deduplication import ExactDeduplicator
+            assert isinstance(pipeline.deduplicator, ExactDeduplicator)
+
+    def test_deduplication_method_invalid(self):
+        """Test that invalid deduplication method raises error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = PipelineConfig(
+                input_path="dummy.jsonl",
+                output_dir=tmpdir,
+                enable_cleaning=False,
+                enable_deduplication=True,
+                dedup_config={"method": "invalid_method"},
+                enable_heuristic_filters=False,
+                enable_quality_filters=False,
+                enable_domain_mixing=False,
+                show_progress=False,
+            )
+
+            # Should raise ValueError when initializing pipeline
+            with pytest.raises(ValueError, match="Unknown deduplication method"):
+                pipeline = DataPipeline(config)
+
+
 class TestPipelineConfig:
     """Test PipelineConfig dataclass."""
 
