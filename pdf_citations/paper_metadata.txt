@@ -1,0 +1,13 @@
+# Paper Metadata for Non-arXiv Citations
+# Format: <identifier> | <type> | <title> | <authors> | <venue> | <year> | <folder> | <filename>
+
+# Broder MinHash Paper
+DOI:10.1109/SEQUEN.1997.666900 | conference | On the resemblance and containment of documents | Andrei Z. Broder | Proceedings of Compression and Complexity of SEQUENCES 1997 | 1997 | 04_Deduplication | Andrei Z. Broder - On the resemblance and containment of documents.pdf
+
+# Note: FineWeb-Edu is part of the FineWeb paper (arXiv:2406.17557), not a separate citation
+
+# REMOVED PAPERS (for audit trail)
+# 2025-10-21: Removed arXiv:2403.06640 "Passive iFIR Filters for Data-Driven Control" by Wang et al.
+#   - Reason: Unrelated to LLM domain mixing (control systems paper, not LLM data mixing)
+#   - Was incorrectly placed in 06_Domain_Mixing/ folder
+#   - This arXiv ID was mistakenly listed in paper_ids.txt instead of DoReMi (2305.10429)
