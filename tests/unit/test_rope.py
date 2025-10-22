@@ -4,7 +4,7 @@ Tests for Rotary Position Embeddings (RoPE).
 Based on SOTA practices from:
 - Su et al. (2021). "RoFormer: Enhanced Transformer with Rotary Position Embedding" (arXiv:2104.09864)
 - EleutherAI Blog: "Rotary Embeddings: A Relative Revolution"
-- Chen et al. (2024). "Round and Round We Go! What makes Rotary Positional Encodings useful?" (arXiv:2410.06205)
+- Barbero et al. (2024). "Round and Round We Go! What makes Rotary Positional Encodings useful?" (arXiv:2410.06205)
 
 Key test areas:
     - Correctness of rotation matrices

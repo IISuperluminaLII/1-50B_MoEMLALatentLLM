@@ -366,8 +366,8 @@ Testing deduplication module...
 # Install pytest
 pip install pytest pytest-cov
 
-# Run all tests with coverage
-pytest tests/data/ -v --cov=src/data --cov-report=html
+# Run all data pipeline tests with coverage
+pytest tests/unit/test_pipeline.py tests/integration/test_dolma_integration.py -v --cov=src/data --cov-report=html
 
 # View coverage report
 open htmlcov/index.html  # macOS/Linux
@@ -499,7 +499,7 @@ class ExactDeduplicator:
    - arXiv:2107.06499
    - MinHash LSH methodology
 
-2. **Zhou et al. (2025)** - "Data × LLM: From Principles to Practices"
+2. **Zhou et al. (2025)** - "A Survey of LLM × DATA"
    - arXiv:2505.18458
    - Complete sanitization pipeline
 

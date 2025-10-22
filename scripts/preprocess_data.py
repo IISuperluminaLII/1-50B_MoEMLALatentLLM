@@ -28,7 +28,7 @@ Usage:
         --composition llama3
 
 References:
-    Zhou et al. (2025). "Data × LLM: From Principles to Practices."
+    Zhou et al. (2025). "A Survey of LLM × DATA."
     arXiv:2505.18458
 
     DeepSeek-AI (2024). "DeepSeek-V3 Technical Report."

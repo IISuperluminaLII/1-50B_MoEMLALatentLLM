@@ -474,22 +474,40 @@ class TestCitationUsage:
                         arxiv_matches = re.findall(r'arXiv:(\d{4}\.\d{4,6})', line)
                         tracked_ids.update(arxiv_matches)
 
-        # Documentation directories to scan
-        docs_root = citations_root.parent / "docs"
-        src_root = citations_root.parent / "src"
+        # Directories and patterns to scan
+        project_root = citations_root.parent
+        docs_root = project_root / "docs"
+        src_root = project_root / "src"
+        scripts_root = project_root / "scripts"
+        configs_root = project_root / "configs"
 
         # Files to scan
         files_to_scan = []
 
-        # Scan docs/
-        if docs_root.exists():
-            files_to_scan.extend(docs_root.glob("*.md"))
+        # 1. Root-level markdown files (README.md, QUICKSTART.md, BUGFIX_SUMMARY.md, etc.)
+        files_to_scan.extend(project_root.glob("*.md"))
 
-        # Scan src/ for Python files with docstrings
+        # 2. All docs/ markdown files recursively
+        if docs_root.exists():
+            files_to_scan.extend(docs_root.rglob("*.md"))
+
+        # 3. Source code Python files with docstrings
         if src_root.exists():
             files_to_scan.extend(src_root.rglob("*.py"))
 
-        # Also scan pdf_citations/README.md
+        # 4. Script files
+        if scripts_root.exists():
+            files_to_scan.extend(scripts_root.glob("*.py"))
+
+        # 5. Configuration files (JSON, YAML)
+        if configs_root.exists():
+            files_to_scan.extend(configs_root.rglob("*.json"))
+            files_to_scan.extend(configs_root.rglob("*.yaml"))
+            files_to_scan.extend(configs_root.rglob("*.yml"))
+            # Also check config markdown files
+            files_to_scan.extend(configs_root.rglob("*.md"))
+
+        # 6. pdf_citations README
         if (citations_root / "README.md").exists():
             files_to_scan.append(citations_root / "README.md")
 
