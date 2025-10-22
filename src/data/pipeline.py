@@ -154,8 +154,15 @@ class DataPipeline:
 
         # Initialize domain mixer
         if self.config.enable_domain_mixing:
-            # Placeholder - would implement DomainMixer class
-            self.domain_mixer = None
+            from .domain_mixing import DomainMixer
+            self.domain_mixer = DomainMixer(
+                composition=self.config.domain_config.get("composition", "deepseek_v3"),
+                identification_method=self.config.domain_config.get("identification_method", "keyword"),
+                target_tokens=self.config.domain_config.get("target_tokens"),
+                temperature=self.config.domain_config.get("temperature", 0.5),
+                num_iterations=self.config.domain_config.get("num_iterations", 1),
+                random_seed=self.config.domain_config.get("random_seed", 42),
+            )
         else:
             self.domain_mixer = None
 
@@ -339,11 +346,22 @@ class DataPipeline:
             if self.config.show_progress:
                 print("\nStage 5/5: Domain Mixing")
 
-            # Placeholder - would apply domain mixing
-            # For now, just pass through
+            # Apply domain mixing to balance dataset composition
+            target_size = self.config.domain_config.get("target_size")
+            documents = self.domain_mixer.mix_documents(
+                documents,
+                target_size=target_size,
+            )
+
+            # Collect domain statistics
+            self.stats.domain_stats = self.domain_mixer.get_statistics()
 
             if self.config.save_intermediate:
                 self._save_data(documents, "intermediate/05_domain_mixed")
+
+                # Save domain mixing statistics
+                stats_file = self.intermediate_dir / "domain_mixing_stats.json"
+                self.domain_mixer.save_statistics(stats_file)
 
         # Save final output
         self._save_data(documents, "final")
