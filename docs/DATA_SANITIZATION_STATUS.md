@@ -136,15 +136,92 @@ unique_docs, unique_ids = exact_dedup.deduplicate(docs)
 
 ---
 
+## Data Loading and Input Formats
+
+### Supported Input Formats
+
+The data pipeline supports multiple input formats through the `DataPipeline` class:
+
+#### 1. Local Files
+- **JSONL files** (`.jsonl`): Each line is a JSON object with `text` and optional `id` fields
+- **Plain text files**: Each non-empty line becomes a separate document
+
+#### 2. HuggingFace Datasets
+The pipeline can load datasets directly from HuggingFace Hub without downloading them locally.
+
+**Supported dataset name patterns:**
+- Namespace/dataset format: `allenai/dolma`, `bigcode/starcoderdata`
+- Well-known datasets: `wikitext`, `c4`, `openwebtext`, `dolma`
+
+**Example usage:**
+```python
+from src.data.pipeline import DataPipeline, PipelineConfig
+
+# Load from HuggingFace
+config = PipelineConfig(
+    input_path="allenai/dolma",  # HuggingFace dataset name
+    output_dir="processed_data",
+    enable_cleaning=True,
+    enable_deduplication=True,
+)
+
+pipeline = DataPipeline(config)
+stats = pipeline.process_and_save()
+```
+
+**How it works:**
+- Pipeline checks if path contains "/" or matches known dataset names
+- Loads using `datasets.load_dataset()` with streaming
+- Extracts `text` and `id` fields from each example
+- Early return prevents attempting to open as local file
+
+**Note**: HuggingFace dataset loading requires the `datasets` library:
+```bash
+pip install datasets
+```
+
+#### 3. In-Memory Data
+For testing and small datasets, you can pass data directly:
+
+```python
+input_data = [
+    {"text": "Document 1 content", "id": "doc_1"},
+    {"text": "Document 2 content", "id": "doc_2"},
+]
+
+stats = pipeline.process_and_save(input_data=input_data)
+```
+
+**Important:** The pipeline uses `if input_data is not None:` to distinguish between:
+- `None`: Load from disk/HuggingFace
+- Empty list `[]`: Process zero documents (useful for testing)
+- Non-empty list: Process provided documents
+
+---
+
 ## Pending Modules
 
-### Phase 3: Heuristic Filtering (NOT STARTED)
+### Phase 3: Heuristic Filtering (BASIC IMPLEMENTATION COMPLETE)
 
-**Estimated Time**: 2-3 days
+**Implementation**: [src/data/heuristic_filters.py](src/data/heuristic_filters.py)
+**Tests**: [tests/integration/test_dolma_integration.py](tests/integration/test_dolma_integration.py)
+**Status**: ✅ Basic implementation complete, advanced features pending
 **References**:
 - Li et al. (2025), arXiv:2505.18458 - Section 3.1.2
 - Nguyen et al. (2024), arXiv:2409.09613 - DCLM filters
 - Gao et al. (2021), arXiv:2101.00027 - The Pile filters
+
+#### Features Implemented:
+- ✅ Document length filters (min/max bounds)
+- ✅ Line-level filters (min lines, max line length)
+- ✅ Character-level n-gram repetition detection
+- ✅ Line-level repetition detection
+- ✅ Special character ratio thresholds
+- ✅ Alphabetic character ratio checking
+- ✅ Word-level statistics (average word length)
+- ✅ Structural integrity checks (balanced brackets/quotes)
+- ✅ Statistics collection and reporting
+- ✅ Integration with pipeline
 
 #### Planned Features:
 - Document length filters (min/max bounds per domain)
@@ -461,25 +538,29 @@ src/data/
 ├── __init__.py                    # Module exports with citations
 ├── preliminary_cleaning.py        # ✓ Complete (200+ lines)
 ├── deduplication.py              # ✓ Complete (420+ lines)
-├── heuristic_filters.py          # Pending
-├── quality_filters.py            # Pending
+├── heuristic_filters.py          # ✓ Basic implementation (230+ lines)
+├── pipeline.py                   # ✓ Complete with bug fixes (350+ lines)
+├── quality_filters.py            # Partial (FastText classifier)
 ├── domain_mixing.py              # Pending
 └── sanitizer.py                  # Pending (unified pipeline)
 
-tests/data/
-├── __init__.py                   # ✓ Complete
-├── test_preliminary_cleaning.py  # ✓ Complete (286 lines, 20+ tests)
-├── test_deduplication.py        # ✓ Complete (500+ lines, 40+ tests)
-├── test_heuristic_filters.py    # Pending
-├── test_quality_filters.py      # Pending
-├── test_domain_mixing.py        # Pending
-└── test_integration.py          # Pending (end-to-end tests)
+tests/
+├── integration/
+│   └── test_dolma_integration.py # ✓ Includes pipeline regression tests
+├── unit/
+│   ├── test_preliminary_cleaning.py  # ✓ Complete (20+ tests)
+│   └── test_deduplication.py         # ✓ Complete (40+ tests)
+└── README.md
 
 scripts/
 └── run_data_tests.py            # ✓ Quick test runner
 
 docs/
 └── DATA_SANITIZATION_STATUS.md  # This file
+
+pdf_citations/
+├── README.md                    # ✓ Citation status and missing papers
+└── [01-06 subdirectories]       # PDFs organized by topic
 ```
 
 ---
@@ -505,6 +586,47 @@ docs/
 
 ---
 
-*Last Updated: 2025-10-16*
-*Status: Phases 1-2 complete, Phases 3-7 pending*
-*Total Implementation Progress: ~30% (2 of 7 phases)*
+## Recent Updates and Bug Fixes (2025-10-21)
+
+### Critical Bug Fixes in Pipeline
+
+1. **HuggingFace Dataset Fallthrough (FIXED)**
+   - **Issue**: When loading HF datasets, code would yield examples but then fallthrough to attempt opening as local file
+   - **Fix**: Added early `return` after HuggingFace dataset iteration
+   - **Impact**: HF-backed inputs now work correctly without FileNotFoundError
+
+2. **Empty List Handling (FIXED)**
+   - **Issue**: Truthiness check `if input_data:` treated empty list same as None
+   - **Fix**: Changed to `if input_data is not None:` to properly distinguish empty lists
+   - **Impact**: Empty batches can now be tested in-memory without disk access
+
+3. **Negative Deduplication Statistics (FIXED)**
+   - **Issue**: When cleaning disabled, `documents_cleaned` stayed at 0, causing negative dedup count
+   - **Fix**: Set `documents_cleaned` to input count when cleaning disabled; use pre-dedup count
+   - **Impact**: Statistics are now always non-negative and accurate
+
+4. **Heuristic Filtering Silently Disabled (FIXED)**
+   - **Issue**: `self.heuristic_filter = None` even when enabled, stage never ran
+   - **Fix**: Implemented basic `HeuristicFilter` class with core filtering logic
+   - **Impact**: Stage 3 now actually filters documents when enabled
+
+### New Features
+
+- ✅ **HuggingFace Dataset Support**: Direct loading from HF Hub with streaming
+- ✅ **Basic Heuristic Filters**: Document length, repetition, special chars, structural checks
+- ✅ **Comprehensive Testing**: 4 new regression tests for all bug fixes
+- ✅ **PDF Citation Tracking**: README documenting missing and mismatched papers
+
+### Tests Added
+
+1. `test_pipeline_with_huggingface_dataset` - Verifies HF datasets load without file access
+2. `test_pipeline_with_empty_list` - Verifies empty lists process without disk access
+3. `test_pipeline_deduplication_stats_without_cleaning` - Verifies non-negative stats
+4. `test_pipeline_heuristic_filtering` - Verifies filters actually run when enabled
+
+---
+
+*Last Updated: 2025-10-21*
+*Status: Phases 1-3 (basic) complete, Phases 4-7 pending*
+*Total Implementation Progress: ~40% (2.5 of 7 phases)*
+*Critical Bugs: 0 known issues remaining*

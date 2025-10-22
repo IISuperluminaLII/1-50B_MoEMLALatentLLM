@@ -171,12 +171,17 @@ class TestDolmaDatasetV2(unittest.TestCase):
             mtp_labels = batch["mtp_labels"]
 
             # Check MTP labels
-            # For positions 0-7 (not padding), should predict next 2 tokens
+            # For positions 0-7 (not padding), should predict next tokens if they exist and aren't padding
             for i in range(seq_length - 2):
-                if i < seq_length - 2 and attention_mask[i] == 1:
-                    # Should predict tokens i+1 and i+2
+                if attention_mask[i] == 1:
+                    # First MTP label should always predict i+1 if current position is valid
                     self.assertEqual(mtp_labels[i, 0].item(), i + 1)
-                    self.assertEqual(mtp_labels[i, 1].item(), i + 2)
+                    # Second MTP label should only predict i+2 if position i+2 is valid (not padding)
+                    if i + 2 < seq_length and attention_mask[i + 2] == 1:
+                        self.assertEqual(mtp_labels[i, 1].item(), i + 2)
+                    else:
+                        # Position i+2 is padding or out of bounds, should be -100
+                        self.assertEqual(mtp_labels[i, 1].item(), -100)
 
             # Padding positions should have -100
             self.assertEqual(mtp_labels[-2, 0].item(), -100)
@@ -212,7 +217,7 @@ class TestCreateDolmaDataloadersV2(unittest.TestCase):
             }
         }
 
-    @patch('torch.utils.data.DataLoader')
+    @patch('src.data.dolma_loader.DataLoader')
     @patch('src.data.dolma_loader.DolmaDataset')
     def test_create_dataloaders(self, mock_dataset, mock_dataloader):
         """Test creating train and validation dataloaders."""
@@ -276,7 +281,7 @@ class TestCreateDolmaDataloadersV2(unittest.TestCase):
         }
 
         with patch('src.data.dolma_loader.DolmaDataset') as mock_dataset:
-            with patch('torch.utils.data.DataLoader'):
+            with patch('src.data.dolma_loader.DataLoader'):
                 mock_train_dataset = Mock()
                 mock_val_dataset = Mock()
                 mock_dataset.side_effect = [mock_train_dataset, mock_val_dataset]

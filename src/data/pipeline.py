@@ -135,8 +135,10 @@ class DataPipeline:
 
         # Initialize heuristic filters
         if self.config.enable_heuristic_filters:
-            # Placeholder - would implement HeuristicFilter class
-            self.heuristic_filter = None
+            from .heuristic_filters import HeuristicFilter, HeuristicFilterConfig
+            self.heuristic_filter = HeuristicFilter(
+                HeuristicFilterConfig(**self.config.heuristic_config)
+            )
         else:
             self.heuristic_filter = None
 
@@ -159,36 +161,44 @@ class DataPipeline:
 
     def _load_data(self, input_path: Optional[str] = None) -> Iterator[Dict]:
         """
-        Load input data from file.
+        Load input data from file or HuggingFace dataset.
+
+        Supports:
+        - Local JSONL files
+        - Local plain text files
+        - HuggingFace dataset names (e.g., "allenai/dolma", "wikitext", "c4")
 
         Args:
-            input_path: Path to input file (overrides config)
+            input_path: Path to input file or HuggingFace dataset name (overrides config)
 
         Yields:
             Document dictionaries with "text" and optional "id" fields
         """
         path = input_path or self.config.input_path
-        path = Path(path)
+        path_obj = Path(path)
 
-        if not path.exists():
-            # Check if it's a HuggingFace dataset name
-            if "/" in str(path) or str(path) in ["wikitext", "c4", "openwebtext"]:
-                # Load from HuggingFace
-                from datasets import load_dataset
-                dataset = load_dataset(str(path), split="train", streaming=True)
-                for example in dataset:
-                    yield {"text": example.get("text", ""), "id": example.get("id", None)}
-            else:
-                raise FileNotFoundError(f"Input file not found: {path}")
+        # Check if it's a HuggingFace dataset name (before checking file existence)
+        # HF datasets contain "/" or are known dataset names
+        if "/" in str(path) or str(path) in ["wikitext", "c4", "openwebtext", "dolma"]:
+            # Load from HuggingFace
+            from datasets import load_dataset
+            dataset = load_dataset(str(path), split="train", streaming=True)
+            for example in dataset:
+                yield {"text": example.get("text", ""), "id": example.get("id", None)}
+            return  # Early return to prevent fallthrough
 
-        # Load from file
-        if path.suffix == ".jsonl":
-            with open(path, "r", encoding="utf-8") as f:
+        # Check if local file exists
+        if not path_obj.exists():
+            raise FileNotFoundError(f"Input file not found: {path}")
+
+        # Load from local file
+        if path_obj.suffix == ".jsonl":
+            with open(path_obj, "r", encoding="utf-8") as f:
                 for line in f:
                     yield json.loads(line)
         else:
             # Try to read as plain text
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path_obj, "r", encoding="utf-8") as f:
                 doc_id = 0
                 for line in f:
                     if line.strip():
@@ -223,7 +233,8 @@ class DataPipeline:
         Run complete preprocessing pipeline and save results.
 
         Args:
-            input_data: Optional list of documents (for testing)
+            input_data: Optional list of documents (for testing). If provided (including
+                       empty list), uses in-memory data; if None, loads from disk.
 
         Returns:
             Pipeline statistics
@@ -231,7 +242,8 @@ class DataPipeline:
         start_time = time.time()
 
         # Load data
-        if input_data:
+        # Use 'is not None' to allow empty lists for testing
+        if input_data is not None:
             documents = input_data
         else:
             documents = list(self._load_data())
@@ -256,11 +268,18 @@ class DataPipeline:
 
             if self.config.save_intermediate:
                 self._save_data(documents, "intermediate/01_cleaned")
+        else:
+            # If cleaning is disabled, set documents_cleaned to input count
+            self.stats.documents_cleaned = len(documents)
 
         # Stage 2: Deduplication
         if self.config.enable_deduplication and self.deduplicator:
             if self.config.show_progress:
                 print("\nStage 2/5: Deduplication")
+
+            # Record pre-deduplication count (use cleaned count if available, else current)
+            # This ensures correct statistics even when cleaning is disabled
+            pre_dedup_count = self.stats.documents_cleaned if self.config.enable_cleaning else len(documents)
 
             texts = [doc["text"] for doc in documents]
             doc_ids = [doc.get("id", f"doc_{i}") for i, doc in enumerate(documents)]
@@ -275,7 +294,8 @@ class DataPipeline:
                 for text, doc_id in zip(unique_texts, unique_ids)
             ]
 
-            self.stats.documents_deduplicated = self.stats.documents_cleaned - len(documents)
+            # Calculate deduplicated count using pre-dedup count (not documents_cleaned)
+            self.stats.documents_deduplicated = pre_dedup_count - len(documents)
 
             if self.config.save_intermediate:
                 self._save_data(documents, "intermediate/02_deduplicated")
@@ -285,8 +305,15 @@ class DataPipeline:
             if self.config.show_progress:
                 print("\nStage 3/5: Heuristic Filtering")
 
-            # Placeholder - would apply heuristic filters
-            # For now, just pass through
+            # Apply heuristic filters
+            filtered_docs = []
+            for doc in tqdm(documents, desc="Heuristic filtering", disable=not self.config.show_progress):
+                if self.heuristic_filter.filter(doc["text"]):
+                    filtered_docs.append(doc)
+
+            self.stats.documents_filtered_heuristic = len(documents) - len(filtered_docs)
+            self.stats.heuristic_stats = self.heuristic_filter.get_stats().__dict__
+            documents = filtered_docs
 
             if self.config.save_intermediate:
                 self._save_data(documents, "intermediate/03_heuristic_filtered")
