@@ -20,6 +20,8 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 
 #### 01_Architecture
 - ✅ DeepSeek-AI et al. (2024) - "DeepSeek-V3 Technical Report" (arXiv:2412.19437)
+- ✅ Su et al. (2021) - "RoFormer: Enhanced Transformer with Rotary Position Embedding" (arXiv:2104.09864)
+- ✅ Barbero et al. (2024) - "Round and Round We Go! What makes Rotary Positional Encodings useful?" (arXiv:2410.06205)
 
 #### 02_Scaling_Laws
 - ✅ Rae et al. (2021) - "Scaling Language Models: Methods, Analysis & Insights from Training Gopher" (arXiv:2112.11446)
@@ -35,17 +37,29 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 - ✅ Lee et al. (2022) - "Deduplicating Training Data Makes Language Models Better" (arXiv:2107.06499)
 - ✅ Khan et al. (2024) - "LSHBloom: Memory-efficient, Extreme-scale Document Deduplication" (arXiv:2411.04257)
 - ✅ Son et al. (2025) - "FED: Fast and Efficient Dataset Deduplication Framework with GPU Acceleration" (arXiv:2501.01046)
+- ✅ Broder (1997) - "On the resemblance and containment of documents" (DOI:10.1109/SEQUEN.1997.666900)
 
 #### 05_Quality_Filtering
 - ✅ Penedo et al. (2024) - "The RefinedWeb Dataset for Falcon LLM" (arXiv:2306.01116)
 - ✅ Penedo et al. (2024) - "The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale" (arXiv:2406.17557)
 - ✅ Li et al. (2024) - "DataComp-LM: In search of the next generation of training sets for language models" (arXiv:2406.11794)
-- ✅ Thiziri Nait Saada et al. (2024) - "The Data-Quality Illusion" (arXiv:2510.00866)
-- ✅ Yungi Kim et al. (2024) - "Rethinking KenLM: Good and Bad Model Ensembles for Efficient Text Quality Filtering" (arXiv:2409.09613)
+- ✅ Nait Saada et al. (2024) - "The Data-Quality Illusion" (arXiv:2510.00866)
+- ✅ Kim et al. (2024) - "Rethinking KenLM: Good and Bad Model Ensembles for Efficient Text Quality Filtering" (arXiv:2409.09613)
+- ✅ Joulin et al. (2016) - "Bag of Tricks for Efficient Text Classification" (FastText) (arXiv:1607.01759)
+- ✅ Wenzek et al. (2019) - "CCNet: Extracting High Quality Monolingual Datasets from Web Crawl Data" (arXiv:1911.00359)
+
+#### 06_Domain_Mixing
+- ✅ Xie et al. (2023) - "DoReMi: Optimizing Data Mixtures Speeds Up Language Model Pretraining" (arXiv:2305.10429)
+
+#### 07_Data_Practices
+- ✅ Zhou et al. (2025) - "A Survey of LLM × DATA" (arXiv:2505.18458)
+- ✅ Gloeckle et al. (2024) - "Better & Faster Large Language Models via Multi-token Prediction" (arXiv:2404.19737)
+- ✅ Mehra et al. (2025) - "On multi-token prediction for efficient LLM inference" (arXiv:2502.09419)
+- ✅ Cai et al. (2025) - "FastMTP: Accelerating LLM Inference with Enhanced Multi-Token Prediction" (arXiv:2509.18362)
 
 ### Citation Status Summary
 
-**Total Papers:** 19 PDFs across 7 categories
+**Total Papers:** 25 PDFs across 7 categories (24 arXiv + 1 non-arXiv)
 - ✅ All critical SOTA pipeline citations are now present
 - ✅ All code-referenced papers have been downloaded and organized
 - ✅ Non-arXiv papers tracked in `paper_metadata.txt`
@@ -65,6 +79,27 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 
 4. ✅ **Broder (1997) - "MinHash"** (DOI:10.1109/SEQUEN.1997.666900) → `04_Deduplication/`
    - Seminal paper for document resemblance and containment
+
+5. ✅ **Wenzek et al. (2019) - "CCNet"** (arXiv:1911.00359) → `05_Quality_Filtering/`
+   - High-quality monolingual dataset extraction from web crawls
+   - Referenced in DeepSeek configs for quality filtering
+
+6. ✅ **Gloeckle et al. (2024) - "Better & Faster LLMs via Multi-token Prediction"** (arXiv:2404.19737) → `07_Data_Practices/`
+   - Multi-token prediction (MTP) methodology paper
+   - Referenced in `tests/unit/test_mtp.py`
+
+7. ✅ **Mehra et al. (2025) - "On multi-token prediction for efficient LLM inference"** (arXiv:2502.09419) → `07_Data_Practices/`
+   - MTP efficiency analysis for inference
+
+8. ✅ **Cai et al. (2025) - "FastMTP"** (arXiv:2509.18362) → `07_Data_Practices/`
+   - Accelerating LLM inference with enhanced MTP
+
+9. ✅ **Su et al. (2021) - "RoFormer"** (arXiv:2104.09864) → `01_Architecture/`
+   - Rotary Position Embedding (RoPE) foundation paper
+   - Referenced in `tests/unit/test_rope.py`
+
+10. ✅ **Barbero et al. (2024) - "Round and Round We Go!"** (arXiv:2410.06205) → `01_Architecture/`
+    - Analysis of what makes Rotary Positional Encodings useful
 
 ### Notes
 
@@ -88,14 +123,16 @@ The `paper_ids.txt` file contains arXiv identifiers (without the "arXiv:" prefix
 ...
 ```
 
-## Missing ArXiv IDs Needed
+## Citation Coverage Status
 
-To complete the citation library, please add these arXiv IDs to `paper_ids.txt`:
+All tracked arXiv IDs in `paper_ids.txt` have been downloaded and mapped:
 
-- [ ] 2505.18458 (Data × LLM - may not exist yet, check availability)
-- [ ] FineWeb-Edu paper ID (or confirm it's part of 2406.17557)
-- [ ] Confirm 2403.06640 (DoReMi) is correct and download PDF
-- [ ] Confirm 2409.09613 (DCLM) is correct and download PDF
+- ✅ All 24 arXiv papers downloaded and organized by category
+- ✅ All papers referenced in code have corresponding PDFs
+- ✅ Mapping file (`arxiv_to_pdf_mapping.json`) is complete and up-to-date
+- ✅ No missing or outstanding citation downloads
+
+To add new citations, update `paper_ids.txt` and run `python download_papers.py`
 
 ## Verification
 
