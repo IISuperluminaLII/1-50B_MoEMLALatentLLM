@@ -186,7 +186,7 @@ else:
 1. **Missing Papers** (referenced in code but not in pdf_citations):
    - Zhou et al. (2025) "Data × LLM: From Principles to Practices" (arXiv:2505.18458)
    - Lozhkov et al. (2024) "FineWeb-Edu" (no arXiv ID)
-   - Xie et al. (2023) "DoReMi" (arXiv:2403.06640 in paper_ids.txt but PDF not downloaded)
+   - Xie et al. (2023) "DoReMi" (arXiv:2305.10429)
    - Nguyen et al. (2024) "DCLM" (arXiv:2409.09613 in paper_ids.txt but PDF not downloaded)
 
 2. **Unrelated Paper**:

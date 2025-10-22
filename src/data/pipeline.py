@@ -184,33 +184,48 @@ class DataPipeline:
         path = input_path or self.config.input_path
         path_obj = Path(path)
 
-        # Check if it's a HuggingFace dataset name (before checking file existence)
-        # HF datasets contain "/" or are known dataset names
-        if "/" in str(path) or str(path) in ["wikitext", "c4", "openwebtext", "dolma"]:
+        # FIRST: Check if local file exists
+        if path_obj.exists():
+            # Load from local file
+            if path_obj.suffix == ".jsonl":
+                with open(path_obj, "r", encoding="utf-8") as f:
+                    for line in f:
+                        yield json.loads(line)
+            else:
+                # Try to read as plain text
+                with open(path_obj, "r", encoding="utf-8") as f:
+                    doc_id = 0
+                    for line in f:
+                        if line.strip():
+                            yield {"text": line.strip(), "id": f"doc_{doc_id}"}
+                            doc_id += 1
+            return  # Early return after local file handling
+
+        # SECOND: Check if it's a known HuggingFace dataset name
+        # Whitelist known HF dataset aliases
+        known_hf_datasets = [
+            "allenai/dolma",
+            "wikitext",
+            "c4",
+            "openwebtext",
+            "dolma",
+            "the_pile",
+            "redpajama",
+        ]
+
+        if str(path) in known_hf_datasets:
             # Load from HuggingFace
             from datasets import load_dataset
             dataset = load_dataset(str(path), split="train", streaming=True)
             for example in dataset:
                 yield {"text": example.get("text", ""), "id": example.get("id", None)}
-            return  # Early return to prevent fallthrough
+            return
 
-        # Check if local file exists
-        if not path_obj.exists():
-            raise FileNotFoundError(f"Input file not found: {path}")
-
-        # Load from local file
-        if path_obj.suffix == ".jsonl":
-            with open(path_obj, "r", encoding="utf-8") as f:
-                for line in f:
-                    yield json.loads(line)
-        else:
-            # Try to read as plain text
-            with open(path_obj, "r", encoding="utf-8") as f:
-                doc_id = 0
-                for line in f:
-                    if line.strip():
-                        yield {"text": line.strip(), "id": f"doc_{doc_id}"}
-                        doc_id += 1
+        # THIRD: If path wasn't found locally and isn't a known HF dataset, raise error
+        raise FileNotFoundError(
+            f"Input not found: '{path}' is neither a local file nor a known HuggingFace dataset. "
+            f"Known datasets: {', '.join(known_hf_datasets)}"
+        )
 
     def _save_data(self, documents: List[Dict], filename: str):
         """

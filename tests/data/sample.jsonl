@@ -1,0 +1,3 @@
+{"text": "This is a sample document for testing local file loading.", "id": "doc_1"}
+{"text": "Another sample document to ensure the pipeline handles multiple records.", "id": "doc_2"}
+{"text": "The pipeline should prioritize local files over HuggingFace datasets.", "id": "doc_3"}

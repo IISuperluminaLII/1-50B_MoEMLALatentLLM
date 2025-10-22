@@ -362,6 +362,84 @@ class TestCitationUsage:
         assert len(broder_pdfs) > 0, \
             "Broder MinHash paper not found in 04_Deduplication/ (referenced for deduplication)"
 
+    def test_ccnet_citation_exists(self, citations_root: Path):
+        """Test that CCNet paper (arXiv:1911.00359) exists in Quality Filtering folder."""
+        ccnet_pdfs = list((citations_root / "05_Quality_Filtering").glob("*CCNet*.pdf"))
+        if not ccnet_pdfs:
+            # Try alternate search patterns
+            ccnet_pdfs = list((citations_root / "05_Quality_Filtering").glob("*Wenzek*.pdf"))
+
+        assert len(ccnet_pdfs) > 0, \
+            "CCNet paper (Wenzek et al., arXiv:1911.00359) not found in 05_Quality_Filtering/ " \
+            "(referenced in all DeepSeek configs for quality filtering)"
+
+    def test_mtp_papers_exist(self, citations_root: Path):
+        """Test that MTP-related papers exist (referenced in tests/unit/test_mtp.py)."""
+        # arXiv:2404.19737 - Gloeckle et al. "Better & Faster LLMs via Multi-token Prediction"
+        # arXiv:2502.09419 - Mehra et al. "On multi-token prediction for efficient LLM inference"
+        # arXiv:2509.18362 - Cai et al. "FastMTP"
+        mtp_papers = [
+            ("Gloeckle", "Multi-token Prediction"),  # 2404.19737
+            ("Mehra", "multi-token prediction"),      # 2502.09419
+            ("FastMTP", "Accelerating"),              # 2509.18362
+        ]
+
+        # These should be in 01_Architecture or 07_Data_Practices
+        relevant_folders = [
+            citations_root / "01_Architecture",
+            citations_root / "07_Data_Practices",
+        ]
+
+        for author_keyword, title_keyword in mtp_papers:
+            found = False
+            for folder in relevant_folders:
+                if not folder.exists():
+                    continue
+                all_pdfs = list(folder.glob("*.pdf"))
+                matching_pdfs = [
+                    pdf for pdf in all_pdfs
+                    if author_keyword in pdf.name and title_keyword in pdf.name
+                ]
+                if matching_pdfs:
+                    found = True
+                    break
+
+            assert found, \
+                f"MTP paper with author '{author_keyword}' and title '{title_keyword}' not found " \
+                f"(referenced in tests/unit/test_mtp.py)"
+
+    def test_rope_papers_exist(self, citations_root: Path):
+        """Test that RoPE-related papers exist (referenced in tests/unit/test_rope.py)."""
+        # arXiv:2104.09864 - Su et al. "RoFormer: Enhanced Transformer with Rotary Position Embedding"
+        # arXiv:2410.06205 - Barbero et al. "Round and Round We Go! What makes Rotary Positional Encodings useful?"
+        rope_papers = [
+            ("Su", "RoFormer"),           # 2104.09864
+            ("Barbero", "Round and Round"),  # 2410.06205
+        ]
+
+        relevant_folders = [
+            citations_root / "01_Architecture",
+            citations_root / "07_Data_Practices",
+        ]
+
+        for author_keyword, title_keyword in rope_papers:
+            found = False
+            for folder in relevant_folders:
+                if not folder.exists():
+                    continue
+                all_pdfs = list(folder.glob("*.pdf"))
+                matching_pdfs = [
+                    pdf for pdf in all_pdfs
+                    if author_keyword in pdf.name and title_keyword in pdf.name
+                ]
+                if matching_pdfs:
+                    found = True
+                    break
+
+            assert found, \
+                f"RoPE paper with author '{author_keyword}' and title '{title_keyword}' not found " \
+                f"(referenced in tests/unit/test_rope.py)"
+
     def test_documentation_arxiv_ids_are_valid(self, citations_root: Path):
         """
         Scan documentation files for arXiv IDs and verify they exist in citation tracking.
