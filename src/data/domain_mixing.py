@@ -15,6 +15,7 @@ References:
 import re
 import json
 import random
+import warnings
 from collections import defaultdict, Counter
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Tuple, Any
@@ -313,8 +314,21 @@ class GroupDROOptimizer:
             ref_losses = np.array([reference_losses.get(d, 0.0) for d in domain_names])
             excess_losses = losses - ref_losses
         else:
-            # Fallback mode (backward compatibility): use mean-centered losses
-            # NOTE: This is NOT compliant with the DoReMi paper
+            # DoReMi algorithm requires reference losses for proper excess loss computation
+            # Fallback to mean-centered losses is NOT compliant with Xie et al. (2023)
+            warnings.warn(
+                "DoReMi optimization called without reference_losses. "
+                "This violates the DoReMi algorithm (Xie et al., 2023) which requires:\n"
+                "  1. Train a reference model with reference_weights mixture\n"
+                "  2. Measure reference_losses on validation data\n"
+                "  3. Compute excess_loss = proxy_loss - reference_loss\n"
+                "\n"
+                "Falling back to mean-centered losses (NOT DoReMi-compliant). "
+                "Results may not match paper's theoretical guarantees.\n"
+                "\n"
+                "To use DoReMi properly, provide reference_losses parameter.",
+                UserWarning
+            )
             mean_loss = np.mean(losses)
             excess_losses = losses - mean_loss
 

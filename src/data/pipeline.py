@@ -99,6 +99,9 @@ class DataPipeline:
         # Initialize stages
         self._init_stages()
 
+        # Storage for document texts (used by streaming MinHash deduplication)
+        self._dedup_stored_texts = {}
+
     def _init_stages(self):
         """Initialize processing stages based on configuration."""
         # Initialize cleaner
@@ -168,6 +171,7 @@ class DataPipeline:
                 fasttext_filter = FastTextQualityClassifier(
                     model_path=self.config.quality_config.get("fasttext_model_path"),
                     threshold=self.config.quality_config.get("fasttext_threshold", 0.5),
+                    allow_fallback=self.config.quality_config.get("allow_fallback", False),
                 )
 
             if use_kenlm:
@@ -181,6 +185,7 @@ class DataPipeline:
                 kenlm_filter = KenLMQualityFilter(
                     model_path=kenlm_model_path,
                     max_perplexity=self.config.quality_config.get("kenlm_max_perplexity", 1000.0),
+                    allow_fallback=self.config.quality_config.get("allow_fallback", False),
                 )
 
             # Use ensemble if both filters enabled, otherwise use single filter
@@ -612,14 +617,32 @@ class DataPipeline:
 
                     if self.has_datasketch_dedup():
                         minhash = self.deduplicator.compute_minhash(text)
-                        result = self.deduplicator.lsh.query(minhash)
 
-                        if result:
-                            # Duplicate found, skip this document
+                        # Phase 1: Query LSH for candidate duplicates (approximate)
+                        candidates = self.deduplicator.lsh.query(minhash)
+
+                        # Phase 2: Verify candidates with exact Jaccard similarity
+                        is_duplicate = False
+                        if candidates:
+                            for candidate_id in candidates:
+                                if candidate_id in self._dedup_stored_texts:
+                                    # Compute exact Jaccard similarity
+                                    jaccard_sim = self.deduplicator.compute_jaccard_similarity(
+                                        text, self._dedup_stored_texts[candidate_id]
+                                    )
+
+                                    # Only mark as duplicate if similarity >= threshold
+                                    if jaccard_sim >= self.deduplicator.threshold:
+                                        is_duplicate = True
+                                        break
+
+                        if is_duplicate:
+                            # Verified duplicate found, skip this document
                             continue
                         else:
-                            # Not a duplicate, add to index
+                            # Not a duplicate, add to index and store text
                             self.deduplicator.lsh.insert(doc_id, minhash)
+                            self._dedup_stored_texts[doc_id] = text
                     else:
                         # Fallback: exact hash deduplication
                         # Check if this is an ExactDeduplicator (has compute_hash) or MinHashDeduplicator
