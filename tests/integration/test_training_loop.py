@@ -19,6 +19,7 @@ class SyntheticDataset(Dataset):
     """
     Synthetic dataset for training tests.
     Generates random sequences without external dependencies.
+    Includes attention_mask to match the behavior of real data loaders.
     """
     def __init__(self, num_samples, seq_length, vocab_size):
         self.num_samples = num_samples
@@ -39,8 +40,12 @@ class SyntheticDataset(Dataset):
         # mtp_labels shape: [seq_length, num_predict_tokens]
         mtp_labels = torch.randint(0, self.vocab_size, (self.seq_length, 2))
 
+        # Create attention mask (all ones = no padding)
+        attention_mask = torch.ones(self.seq_length, dtype=torch.long)
+
         return {
             'input_ids': input_ids,
+            'attention_mask': attention_mask,
             'labels': labels,
             'mtp_labels': mtp_labels,
         }
@@ -153,6 +158,15 @@ class TestTrainingLoop:
             # Verify training completed
             assert trainer.step == config.training.train_steps
             assert trainer.total_tokens_processed > 0
+
+            # Verify token accounting is reasonable
+            # Total tokens should be approximately: steps × micro_batch_size × seq_length
+            # (We use "approximately" because the last batch might be smaller)
+            expected_min_tokens = (config.training.train_steps - 1) * config.training.micro_batch_size * config.training.seq_length
+            expected_max_tokens = config.training.train_steps * config.training.micro_batch_size * config.training.seq_length
+
+            assert expected_min_tokens <= trainer.total_tokens_processed <= expected_max_tokens, \
+                f"Token count {trainer.total_tokens_processed} outside expected range [{expected_min_tokens}, {expected_max_tokens}]"
 
     @pytest.mark.slow
     def test_training_loss_is_finite(self, device, cpu_training_config):
@@ -339,6 +353,127 @@ class TestTrainingLoop:
             assert 'val_loss' in metrics
             assert torch.isfinite(torch.tensor(metrics['val_loss']))
             assert metrics['val_loss'] > 0
+
+    @pytest.mark.slow
+    def test_token_accounting_accuracy(self, device, cpu_training_config):
+        """Test that token accounting correctly counts actual tokens processed."""
+        config = cpu_training_config
+        device = torch.device("cpu")
+
+        model = DeepSeekV3Model(config).to(device)
+
+        # Create dataset with known number of samples
+        num_samples = 10
+        train_dataset = SyntheticDataset(
+            num_samples=num_samples,
+            seq_length=config.training.seq_length,
+            vocab_size=config.vocab_size
+        )
+
+        # Use micro_batch_size = 2 so we can test multiple batches
+        batch_size = 2
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=False
+        )
+
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = DeepSeekV3Trainer(
+                config=config,
+                model=model,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+                train_dataloader=train_loader,
+                val_dataloader=None,
+                output_dir=tmpdir,
+            )
+
+            # Run exactly 3 training steps
+            num_steps = 3
+            for step, batch in enumerate(train_loader):
+                if step >= num_steps:
+                    break
+                metrics = trainer.train_step(batch)
+                # Update token count as the training loop does
+                trainer.total_tokens_processed += metrics["tokens_this_step"]
+                trainer.step += 1
+
+            # Calculate expected tokens:
+            # 3 steps × 2 samples/step × seq_length tokens/sample
+            expected_tokens = num_steps * batch_size * config.training.seq_length
+
+            # The trainer should have counted exactly this many tokens
+            # SyntheticDataset provides attention_mask with all 1s (no padding)
+            assert trainer.total_tokens_processed == expected_tokens, \
+                f"Expected {expected_tokens} tokens, got {trainer.total_tokens_processed}"
+
+    @pytest.mark.slow
+    def test_token_accounting_with_padding(self, device, cpu_training_config):
+        """Test that token accounting correctly excludes padding tokens."""
+        config = cpu_training_config
+        device = torch.device("cpu")
+
+        model = DeepSeekV3Model(config).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+        lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
+
+        # Create a minimal train_loader for initialization
+        train_dataset = SyntheticDataset(
+            num_samples=5,
+            seq_length=config.training.seq_length,
+            vocab_size=config.vocab_size
+        )
+        train_loader = DataLoader(train_dataset, batch_size=2)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trainer = DeepSeekV3Trainer(
+                config=config,
+                model=model,
+                optimizer=optimizer,
+                lr_scheduler=lr_scheduler,
+                train_dataloader=train_loader,
+                val_dataloader=None,
+                output_dir=tmpdir,
+            )
+
+            # Create a batch with attention mask (simulating padding)
+            batch_size = 2
+            seq_length = config.training.seq_length
+
+            # Create input_ids
+            input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_length))
+
+            # Create attention mask with padding:
+            # First sequence: 30 real tokens, rest padding
+            # Second sequence: 45 real tokens, rest padding
+            # (These values fit within seq_length=64)
+            attention_mask = torch.zeros(batch_size, seq_length, dtype=torch.long)
+            attention_mask[0, :30] = 1  # First 30 tokens are real
+            attention_mask[1, :45] = 1  # First 45 tokens are real
+
+            batch = {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'labels': input_ids.clone(),
+                'mtp_labels': torch.randint(0, config.vocab_size, (batch_size, seq_length, 2)),
+            }
+
+            # Run one training step
+            initial_tokens = trainer.total_tokens_processed
+            metrics = trainer.train_step(batch)
+            # Update token count as the training loop does
+            trainer.total_tokens_processed += metrics["tokens_this_step"]
+
+            # Should have counted exactly 30 + 45 = 75 tokens (not batch_size * seq_length = 128)
+            expected_increase = 30 + 45
+            actual_increase = trainer.total_tokens_processed - initial_tokens
+
+            assert actual_increase == expected_increase, \
+                f"Expected {expected_increase} tokens, got {actual_increase}"
 
     @pytest.mark.slow
     def test_chinchilla_compliance_logging(self, cpu_training_config):
