@@ -6,8 +6,10 @@ DOI:10.1109/SEQUEN.1997.666900 | conference | On the resemblance and containment
 
 # FineWeb-Edu (HuggingFace dataset)
 # Note: FineWeb-Edu is referenced in all DeepSeek configs for educational quality filtering
-# This is a HuggingFace dataset/technical report, not a traditional academic paper
-FineWeb-Edu-2024 | dataset | FineWeb-Edu: LLM-based Educational Quality Filtering | Lozhkov et al. | HuggingFace | 2024 | 05_Quality_Filtering | Lozhkov et al. - FineWeb-Edu LLM-based Educational Quality Filtering.pdf
+# FineWeb-Edu is documented in the FineWeb paper (arXiv:2406.17557)
+# The paper is authored by Penedo et al., but Anton Lozhkov is listed as co-author
+# Using the actual PDF filename that exists in 05_Quality_Filtering/
+FineWeb-Edu-2024 | arxiv | The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale | Guilherme Penedo et al. | arXiv:2406.17557 | 2024 | 05_Quality_Filtering | Guilherme Penedo et al. - The FineWeb Datasets_ Decanting the Web for the Finest Text Data at Scale.pdf
 
 # REMOVED PAPERS (for audit trail)
 # 2025-10-21: Removed arXiv:2403.06640 "Passive iFIR Filters for Data-Driven Control" by Wang et al.

@@ -513,6 +513,140 @@ class TestDoReMiOptimization:
         with pytest.raises(ValueError, match="DoReMi optimizer not initialized"):
             mixer.optimize_weights_doremi(losses)
 
+    def test_doremi_with_reference_losses(self):
+        """Test that DoReMi correctly uses reference losses for excess loss computation."""
+        mixer = DomainMixer(composition="doremi", random_seed=42)
+
+        # Simulate reference model losses (baseline)
+        reference_losses = {
+            "code": 3.0,
+            "common_crawl": 3.0,
+            "wikipedia": 3.0,
+            "academic": 3.0,
+            "books": 3.0,
+            "news": 3.0,
+            "social": 3.0,
+        }
+
+        # Proxy model has HIGH excess loss on code (5.0 - 3.0 = 2.0)
+        # and LOW excess loss on common_crawl (3.5 - 3.0 = 0.5)
+        proxy_losses = {
+            "code": 5.0,  # High excess loss → should be upweighted
+            "common_crawl": 3.5,  # Low excess loss
+            "wikipedia": 3.2,
+            "academic": 3.3,
+            "books": 3.1,
+            "news": 3.4,
+            "social": 3.2,
+        }
+
+        # Get initial weights
+        initial_code_weight = mixer.domain_weights.weights["code"]
+        initial_cc_weight = mixer.domain_weights.weights["common_crawl"]
+
+        # Run optimization with reference baseline
+        mixer.optimize_weights_doremi(
+            proxy_losses,
+            reference_losses=reference_losses,
+            reference_weights=reference_losses,  # Just for tracking
+        )
+
+        # Verify weights changed based on EXCESS loss
+        updated_code_weight = mixer.domain_weights.weights["code"]
+        updated_cc_weight = mixer.domain_weights.weights["common_crawl"]
+
+        # Code has higher excess loss (2.0) vs common_crawl (0.5)
+        # So code should be upweighted more
+        assert updated_code_weight > initial_code_weight, \
+            "Code (high excess loss) should be upweighted"
+
+        # Code should have higher weight than common_crawl after optimization
+        assert updated_code_weight > updated_cc_weight, \
+            "Code (excess=2.0) should have higher weight than common_crawl (excess=0.5)"
+
+        # Verify reference stats are persisted
+        assert mixer.domain_weights.reference_losses == reference_losses
+        assert mixer.domain_weights.reference_weights == reference_losses
+
+    def test_doremi_excess_loss_vs_raw_loss(self):
+        """
+        Test that DoReMi with reference baseline behaves differently than raw losses.
+
+        This regression test ensures the implementation actually uses excess loss,
+        not just raw losses (which was the bug).
+        """
+        mixer = DomainMixer(composition="doremi", random_seed=42)
+
+        # Reference baseline: code is easy (low loss), web is hard (high loss)
+        reference_losses = {
+            "code": 2.0,  # Easy for reference model
+            "common_crawl": 4.0,  # Hard for reference model
+            "wikipedia": 3.0,
+            "academic": 3.0,
+            "books": 3.0,
+            "news": 3.0,
+            "social": 3.0,
+        }
+
+        # Proxy model: code is HARDER than reference (high excess loss)
+        # common_crawl is EASIER than reference (low excess loss)
+        proxy_losses = {
+            "code": 4.0,  # Excess = 4.0 - 2.0 = +2.0 (hard for proxy)
+            "common_crawl": 4.5,  # Excess = 4.5 - 4.0 = +0.5 (easy for proxy)
+            "wikipedia": 3.5,  # Excess = +0.5
+            "academic": 3.2,
+            "books": 3.3,
+            "news": 3.1,
+            "social": 3.4,
+        }
+
+        # Without reference baseline, raw losses would suggest:
+        #   common_crawl (4.5) > code (4.0), so upweight common_crawl
+        #
+        # WITH reference baseline (correct DoReMi), excess losses show:
+        #   code (+2.0) > common_crawl (+0.5), so upweight code
+
+        initial_weights = mixer.domain_weights.weights.copy()
+
+        mixer.optimize_weights_doremi(
+            proxy_losses,
+            reference_losses=reference_losses,
+        )
+
+        updated_weights = mixer.domain_weights.weights
+
+        # Code should be upweighted MORE than common_crawl
+        # because code has higher EXCESS loss (+2.0 vs +0.5)
+        code_increase = updated_weights["code"] - initial_weights["code"]
+        cc_increase = updated_weights["common_crawl"] - initial_weights["common_crawl"]
+
+        assert code_increase > cc_increase, \
+            f"Code (excess=+2.0) should increase more than common_crawl (excess=+0.5). " \
+            f"Got code_increase={code_increase:.4f}, cc_increase={cc_increase:.4f}"
+
+    def test_doremi_fallback_without_reference(self):
+        """Test that DoReMi falls back gracefully when reference losses are not provided."""
+        mixer = DomainMixer(composition="doremi", random_seed=42)
+
+        # Run without reference losses (backward compatibility mode)
+        proxy_losses = {
+            "code": 5.0,
+            "common_crawl": 3.0,
+            "wikipedia": 2.0,
+            "academic": 2.5,
+            "books": 2.8,
+            "news": 2.2,
+            "social": 2.3,
+        }
+
+        # Should not raise, but use mean-centered losses instead
+        initial_weights = mixer.domain_weights.weights.copy()
+        mixer.optimize_weights_doremi(proxy_losses)  # No reference_losses provided
+
+        # Should still update weights (using fallback)
+        assert mixer.domain_weights.weights != initial_weights
+        assert mixer.domain_weights.iteration == 1
+
 
 class TestDomainStatisticsCorrectness:
     """Test that domain statistics report actual sampled mix, not input corpus."""

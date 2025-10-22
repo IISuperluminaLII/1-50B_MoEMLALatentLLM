@@ -79,6 +79,9 @@ class DomainWeights:
     sampled_document_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     sampled_token_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     iteration: int = 0
+    # DoReMi reference model baseline (for excess loss computation)
+    reference_weights: Optional[Dict[str, float]] = None
+    reference_losses: Optional[Dict[str, float]] = None
 
     def normalize(self) -> None:
         """Normalize weights to sum to 1.0."""
@@ -95,6 +98,8 @@ class DomainWeights:
             "sampled_document_counts": dict(self.sampled_document_counts),
             "sampled_token_counts": dict(self.sampled_token_counts),
             "iteration": self.iteration,
+            "reference_weights": self.reference_weights,
+            "reference_losses": self.reference_losses,
         }
 
 
@@ -272,6 +277,7 @@ class GroupDROOptimizer:
         self,
         domain_losses: Dict[str, float],
         domain_names: List[str],
+        reference_losses: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
         """
         Update domain weights based on losses using Group DRO.
@@ -279,22 +285,41 @@ class GroupDROOptimizer:
         The algorithm increases weights for domains with higher excess loss,
         implementing the minimax objective: min_θ max_α E[loss(θ, α)]
 
+        As specified in DoReMi (Xie et al., 2023), the optimizer uses excess loss
+        relative to a reference model baseline:
+            excess_loss = proxy_loss - reference_loss
+
+        If reference_losses is not provided, falls back to mean-centered losses
+        (backward compatibility mode, not DoReMi-compliant).
+
         Args:
-            domain_losses: Dictionary mapping domain names to loss values
+            domain_losses: Dictionary mapping domain names to proxy model loss values
             domain_names: Ordered list of domain names
+            reference_losses: Dictionary mapping domain names to reference model losses
+                             (required for DoReMi algorithm compliance)
 
         Returns:
             Updated domain weights dictionary
+
+        Raises:
+            ValueError: If reference_losses is None and strict DoReMi mode is expected
         """
         # Convert losses to numpy array
         losses = np.array([domain_losses.get(d, 0.0) for d in domain_names])
 
-        # Compute excess losses (compared to mean)
-        mean_loss = np.mean(losses)
-        excess_losses = losses - mean_loss
+        # Compute excess losses per DoReMi specification
+        if reference_losses is not None:
+            # DoReMi mode: excess_loss = proxy_loss - reference_loss
+            ref_losses = np.array([reference_losses.get(d, 0.0) for d in domain_names])
+            excess_losses = losses - ref_losses
+        else:
+            # Fallback mode (backward compatibility): use mean-centered losses
+            # NOTE: This is NOT compliant with the DoReMi paper
+            mean_loss = np.mean(losses)
+            excess_losses = losses - mean_loss
 
         # Update alpha using exponentiated gradient ascent
-        # Higher loss → higher weight (upweight hard domains)
+        # Higher excess loss → higher weight (upweight hard domains)
         self.alpha = self.alpha * np.exp(self.learning_rate * excess_losses / self.temperature)
 
         # Normalize to sum to 1
@@ -552,24 +577,41 @@ class DomainMixer:
     def optimize_weights_doremi(
         self,
         domain_losses: Dict[str, float],
+        reference_losses: Optional[Dict[str, float]] = None,
+        reference_weights: Optional[Dict[str, float]] = None,
     ) -> None:
         """
         Update domain weights using DoReMi Group DRO optimization.
 
+        Per DoReMi (Xie et al., 2023), the algorithm requires:
+        1. A reference model trained with reference mixture weights
+        2. Proxy model losses measured on the same data
+        3. Weight updates based on excess loss: proxy_loss - reference_loss
+
         Args:
-            domain_losses: Perplexity or loss values per domain
+            domain_losses: Proxy model perplexity or loss values per domain
+            reference_losses: Reference model loss values per domain (for excess loss)
+            reference_weights: Reference mixture weights used to train reference model
+                              (stored for reproducibility)
         """
         if self.dro_optimizer is None:
             raise ValueError("DoReMi optimizer not initialized. Set composition='doremi'")
 
-        # Update weights using Group DRO
+        # Update weights using Group DRO with optional reference baseline
         new_weights = self.dro_optimizer.update_weights(
             domain_losses,
             list(DOMAIN_CATEGORIES),
+            reference_losses=reference_losses,
         )
 
         self.domain_weights.weights = new_weights
         self.domain_weights.iteration += 1
+
+        # Persist reference statistics for reproducibility
+        if reference_losses is not None:
+            self.domain_weights.reference_losses = reference_losses
+        if reference_weights is not None:
+            self.domain_weights.reference_weights = reference_weights
 
     def mix_documents_with_feedback(
         self,
@@ -577,6 +619,8 @@ class DomainMixer:
         domain_losses: Dict[str, float],
         num_iterations: int = 1,
         target_size: Optional[int] = None,
+        reference_losses: Optional[Dict[str, float]] = None,
+        reference_weights: Optional[Dict[str, float]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Apply domain mixing with DoReMi feedback loop.
@@ -585,20 +629,34 @@ class DomainMixer:
         before sampling the final mixture, implementing the DoReMi algorithm's
         minimax reweighting strategy.
 
+        Per DoReMi (Xie et al., 2023), the algorithm requires:
+        1. Train a reference model with reference_weights mixture
+        2. Measure reference_losses and domain_losses (proxy model) on validation data
+        3. Optimize proxy weights using excess loss: proxy_loss - reference_loss
+
         Args:
             documents: Input documents to mix
-            domain_losses: Per-domain loss statistics (e.g., perplexity)
+            domain_losses: Proxy model per-domain loss statistics (e.g., perplexity)
             num_iterations: Number of DoReMi weight update iterations
             target_size: Target number of documents (None = use all)
+            reference_losses: Reference model losses per domain (for DoReMi excess loss)
+            reference_weights: Reference mixture weights (stored for reproducibility)
 
         Returns:
             Mixed document list with DoReMi-optimized composition
 
         Example:
             >>> mixer = DomainMixer(composition="doremi")
-            >>> # After training a proxy model, collect domain losses
-            >>> losses = {"code": 2.5, "common_crawl": 3.2, "wikipedia": 2.1}
-            >>> mixed = mixer.mix_documents_with_feedback(docs, losses, num_iterations=3)
+            >>> # Step 1: Train reference model with uniform weights
+            >>> ref_weights = {"code": 0.14, "common_crawl": 0.14, ...}
+            >>> # Step 2: Measure losses on validation set
+            >>> ref_losses = {"code": 2.3, "common_crawl": 2.8, ...}
+            >>> proxy_losses = {"code": 2.5, "common_crawl": 3.2, ...}
+            >>> # Step 3: Optimize with DoReMi
+            >>> mixed = mixer.mix_documents_with_feedback(
+            ...     docs, proxy_losses, num_iterations=3,
+            ...     reference_losses=ref_losses, reference_weights=ref_weights
+            ... )
         """
         if self.composition_name != "doremi":
             raise ValueError(
@@ -608,7 +666,11 @@ class DomainMixer:
 
         # Run DoReMi weight optimization for requested iterations
         for _ in range(num_iterations):
-            self.optimize_weights_doremi(domain_losses)
+            self.optimize_weights_doremi(
+                domain_losses,
+                reference_losses=reference_losses,
+                reference_weights=reference_weights,
+            )
 
         # Now sample using the optimized weights
         return self.mix_documents(documents, target_size=target_size)
@@ -650,6 +712,8 @@ class DomainMixer:
             "total_documents": self.total_documents_processed,
             "total_tokens": self.total_tokens_processed,
             "iteration": self.domain_weights.iteration,
+            "reference_weights": self.domain_weights.reference_weights,
+            "reference_losses": self.domain_weights.reference_losses,
         }
 
     def save_statistics(self, output_path: Path) -> None:

@@ -489,29 +489,28 @@ class TestCitationUsage:
         metadata_file = citations_root / "paper_metadata.txt"
         assert metadata_file.exists(), "paper_metadata.txt missing"
 
+        # FineWeb-Edu is documented in the FineWeb paper by Penedo et al.
+        # The metadata should reference either "FineWeb-Edu" or "FineWeb Datasets"
         fineweb_found = False
         with open(metadata_file, 'r') as f:
             for line in f:
                 if line.startswith('#') or not line.strip():
                     continue
-                if 'FineWeb-Edu' in line and 'Lozhkov' in line:
+                # Accept either "FineWeb-Edu" or "FineWeb Datasets" in the title
+                if ('FineWeb-Edu' in line or 'FineWeb Datasets' in line) and 'Penedo' in line:
                     fineweb_found = True
                     break
 
         assert fineweb_found, \
-            "FineWeb-Edu citation not found in paper_metadata.txt (referenced in all DeepSeek configs at line 162)"
+            "FineWeb-Edu/FineWeb Datasets citation not found in paper_metadata.txt (referenced in all DeepSeek configs)"
 
-        # Check PDF exists
+        # Check PDF exists (should be the FineWeb Datasets paper)
         quality_folder = citations_root / "05_Quality_Filtering"
-        fineweb_pdfs = list(quality_folder.glob("*FineWeb-Edu*.pdf"))
+        fineweb_pdfs = list(quality_folder.glob("*FineWeb*.pdf"))
 
-        # Note: PDF may not exist yet (need to download), so we only warn
-        if not fineweb_pdfs:
-            import warnings
-            warnings.warn(
-                "FineWeb-Edu PDF not found in 05_Quality_Filtering/. "
-                "Metadata entry exists, but PDF needs to be downloaded."
-            )
+        assert len(fineweb_pdfs) > 0, \
+            "FineWeb paper (Penedo et al.) not found in 05_Quality_Filtering/ " \
+            "(FineWeb-Edu is documented in this paper)"
 
     def test_config_citations_have_pdfs(self, citations_root: Path):
         """
@@ -532,10 +531,13 @@ class TestCitationUsage:
         # Known citation patterns in configs (non-arXiv)
         # Format: citation_string -> (expected_author, expected_folder)
         known_citations = {
-            "FineWeb-Edu": ("Lozhkov", "05_Quality_Filtering"),
+            # FineWeb-Edu is documented in the FineWeb paper by Penedo et al.
+            # (Lozhkov is a co-author but Penedo is first author)
+            "FineWeb-Edu": ("Penedo", "05_Quality_Filtering"),
             "CCNet": ("Wenzek", "05_Quality_Filtering"),
             "RefinedWeb": ("Penedo", "05_Quality_Filtering"),
-            "Gopher": ("Rae", "07_Data_Practices"),
+            # Gopher is an arXiv paper (2112.11446) in Scaling Laws folder, not Data Practices
+            "Gopher": ("Rae", "02_Scaling_Laws"),
         }
 
         # Load metadata for non-arXiv papers

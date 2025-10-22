@@ -1074,21 +1074,41 @@ class TestDoReMiPipelineIntegration:
         assert pipeline.domain_mixer.composition_name == "doremi"
         assert pipeline.domain_mixer.dro_optimizer is not None
 
-        # Synthetic losses: code has HIGH loss (hard), web has LOW loss (easy)
-        # DoReMi upweights high-loss (hard) domains
+        # DoReMi requires both reference and proxy model losses
+        # Step 1: Reference model baseline (uniform mixture)
+        reference_losses = {
+            "code": 3.0,
+            "common_crawl": 3.0,
+            "wikipedia": 3.0,
+            "academic": 3.0,
+            "books": 3.0,
+            "news": 3.0,
+            "social": 3.0,
+        }
+
+        reference_weights = {d: 1.0/7 for d in reference_losses.keys()}
+
+        # Step 2: Proxy model losses - code has HIGH excess loss
+        # Excess loss = proxy - reference
+        # code: 5.0 - 3.0 = +2.0 (hard for proxy)
+        # common_crawl: 2.0 - 3.0 = -1.0 (easy for proxy)
         domain_losses = {
-            "code": 5.0,  # High loss - hard domain
-            "common_crawl": 2.0,  # Low loss - easy domain
-            "wikipedia": 3.0,  # Medium loss
+            "code": 5.0,  # High excess loss → should be upweighted
+            "common_crawl": 2.0,  # Low (negative) excess loss
+            "wikipedia": 3.0,  # Zero excess loss
             "academic": 3.5,
             "books": 3.2,
             "news": 2.8,
             "social": 3.0,
         }
 
-        # Apply DoReMi optimization before running pipeline
+        # Apply DoReMi optimization with reference baseline
         for _ in range(3):
-            pipeline.domain_mixer.optimize_weights_doremi(domain_losses)
+            pipeline.domain_mixer.optimize_weights_doremi(
+                domain_losses,
+                reference_losses=reference_losses,
+                reference_weights=reference_weights,
+            )
 
         # Now run the pipeline which will use the optimized weights
         stats = pipeline.process_and_save(input_data=input_data)
@@ -1116,13 +1136,21 @@ class TestDoReMiPipelineIntegration:
         # Verify DoReMi optimization occurred
         assert domain_stats["iteration"] == 3
 
-        # Code (high loss) should have higher weight than initial uniform
-        assert domain_stats["target_weights"]["code"] > 1.0 / 7, \
-            f"Expected code weight > {1.0/7:.3f}, got {domain_stats['target_weights']['code']:.3f}"
+        # Verify reference statistics are persisted
+        assert domain_stats["reference_losses"] is not None, \
+            "Reference losses should be persisted for reproducibility"
+        assert domain_stats["reference_weights"] is not None, \
+            "Reference weights should be persisted for reproducibility"
 
-        # Common crawl (low loss) should have lower weight than code (high loss)
+        # Code has HIGH excess loss (+2.0) → should be upweighted
+        # Common crawl has LOW excess loss (-1.0) → should be downweighted
+        assert domain_stats["target_weights"]["code"] > 1.0 / 7, \
+            f"Code (high excess loss) should exceed uniform weight. " \
+            f"Expected > {1.0/7:.3f}, got {domain_stats['target_weights']['code']:.3f}"
+
+        # Code (excess=+2.0) should have higher weight than common_crawl (excess=-1.0)
         assert domain_stats["target_weights"]["code"] > domain_stats["target_weights"]["common_crawl"], \
-            "Hard domain (code) should have more weight than easy domain (common_crawl)"
+            "Code (high excess loss) should have more weight than common_crawl (low excess loss)"
 
         # Verify actual distribution matches sampled output
         assert "input_distribution" in domain_stats
@@ -1134,17 +1162,30 @@ class TestDoReMiPipelineIntegration:
         assert total_sampled == 150
 
     def test_doremi_weight_convergence(self):
-        """Test that DoReMi weights converge over multiple iterations."""
+        """Test that DoReMi weights converge over multiple iterations with reference baseline."""
         from src.data.domain_mixing import DomainMixer
 
         mixer = DomainMixer(composition="doremi", random_seed=42)
 
-        # Consistent loss signal: code has HIGH loss (hard domain)
-        # DoReMi upweights high-loss domains
-        domain_losses = {
-            "code": 4.5,  # Consistently HIGH loss - should be upweighted
-            "common_crawl": 1.5,  # Consistently LOW loss
+        # Reference model baseline (uniform)
+        reference_losses = {
+            "code": 3.0,
+            "common_crawl": 3.0,
             "wikipedia": 3.0,
+            "academic": 3.0,
+            "books": 3.0,
+            "news": 3.0,
+            "social": 3.0,
+        }
+
+        # Consistent excess loss signal: code has HIGH excess loss
+        # Excess = proxy - reference
+        # code: 4.5 - 3.0 = +1.5
+        # common_crawl: 1.5 - 3.0 = -1.5
+        domain_losses = {
+            "code": 4.5,  # High excess loss (+1.5) - should be upweighted
+            "common_crawl": 1.5,  # Low excess loss (-1.5)
+            "wikipedia": 3.0,  # Zero excess loss
             "academic": 3.2,
             "books": 3.1,
             "news": 3.3,
@@ -1155,12 +1196,15 @@ class TestDoReMiPipelineIntegration:
         weight_history = []
 
         for i in range(5):
-            mixer.optimize_weights_doremi(domain_losses)
+            mixer.optimize_weights_doremi(
+                domain_losses,
+                reference_losses=reference_losses,
+            )
             weight_history.append(mixer.domain_weights.weights["code"])
 
-        # Code weight should increase monotonically (or stabilize) under consistent high-loss signal
+        # Code weight should increase under consistent high excess loss signal
         assert weight_history[-1] > weight_history[0], \
-            "Code weight should increase after optimization (high loss domain gets upweighted)"
+            "Code weight should increase (high excess loss domain gets upweighted)"
 
         # Later iterations should show smaller changes (convergence)
         early_change = abs(weight_history[1] - weight_history[0])
