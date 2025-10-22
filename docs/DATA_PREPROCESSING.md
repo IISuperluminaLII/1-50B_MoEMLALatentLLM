@@ -28,7 +28,7 @@ This implementation provides a production-ready data preprocessing pipeline that
 
 - **MinHash LSH**: Near-duplicate detection (128 hash functions, 13-grams, 0.8 threshold)
 - **Exact deduplication**: SHA-256 hash-based
-- **GPU acceleration ready** (Zhao et al. 2025)
+- **GPU acceleration ready** (Son et al. 2025, arXiv:2501.01046)
 
 ### Stage 3: Heuristic Filtering
 **References**: Gopher (Rae et al. 2021), C4 (Raffel et al. 2020), RefinedWeb (Penedo et al. 2023), FineWeb (Penedo et al. 2024)
@@ -39,10 +39,10 @@ This implementation provides a production-ready data preprocessing pipeline that
 - Natural language indicators (stop word ratios)
 
 ### Stage 4: Quality Filtering (Optional)
-**References**: Xu et al. (2024), Nguyen et al. (2024)
+**References**: Kim et al. (2024) arXiv:2409.09613, Li et al. (2024) arXiv:2406.11794
 
 - **FastText classifier**: Trainable quality scoring
-- **KenLM perplexity**: Language model-based filtering
+- **KenLM perplexity**: Language model-based filtering (Kim et al.)
 - **Ensemble approach**: Combines multiple quality signals
 
 ### Stage 5: Domain Mixing
@@ -306,7 +306,7 @@ output_format: "hf_dataset"
    ```
 
 4. **GPU acceleration** (future):
-   - MinHash deduplication: 107× speedup (Zhao et al. 2025)
+   - MinHash deduplication: 107× speedup (Son et al. 2025, arXiv:2501.01046)
 
 ## Quality Filters (Advanced)
 
