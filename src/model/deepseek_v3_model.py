@@ -326,9 +326,10 @@ class DeepSeekV3Model(nn.Module):
         mtp_logits, mtp_loss = self.mtp_head(hidden, mtp_labels=mtp_labels)
 
         # Aggregate MoE load balancing loss
+        # Per DeepSeek V3 paper: MoE losses should be summed across layers, not averaged
         moe_load_balancing_loss = None
         if len(moe_load_balancing_losses) > 0:
-            moe_load_balancing_loss = torch.stack(moe_load_balancing_losses).mean()
+            moe_load_balancing_loss = torch.stack(moe_load_balancing_losses).sum()
 
         # Aggregate MoE metrics across layers into a single dictionary
         aggregated_moe_metrics = None
@@ -362,18 +363,25 @@ class DeepSeekV3Model(nn.Module):
                         if values:
                             aggregated_moe_metrics[key] = sum(values) / len(values)
 
-        # Combine losses
+        # Combine losses with configurable weights
+        # Per DeepSeek V3 paper: L = λ_LM * L_LM + λ_MTP * L_MTP + λ_aux * L_aux
         total_loss = None
-        if (lm_loss is not None) and (mtp_loss is not None):
-            total_loss = lm_loss + mtp_loss
-        elif lm_loss is not None:
-            total_loss = lm_loss
-        elif mtp_loss is not None:
-            total_loss = mtp_loss
 
-        # Add MoE load balancing loss to total
+        # Get loss weights from config if available
+        lm_weight = getattr(self.config.training, 'lm_loss_weight', 1.0) if hasattr(self, 'config') else 1.0
+        mtp_weight = 1.0  # For now, uniform MTP weight; could use per-depth weights
+        moe_weight = getattr(self.config.training, 'moe_aux_loss_weight', 0.001) if hasattr(self, 'config') else 0.001
+
+        if (lm_loss is not None) and (mtp_loss is not None):
+            total_loss = lm_weight * lm_loss + mtp_weight * mtp_loss
+        elif lm_loss is not None:
+            total_loss = lm_weight * lm_loss
+        elif mtp_loss is not None:
+            total_loss = mtp_weight * mtp_loss
+
+        # Add MoE load balancing loss with weight (already summed across layers)
         if moe_load_balancing_loss is not None and total_loss is not None:
-            total_loss = total_loss + moe_load_balancing_loss
+            total_loss = total_loss + moe_weight * moe_load_balancing_loss
 
         # Build output structure
         class Output:

@@ -850,6 +850,84 @@ class TestPipelineStreaming:
         assert stats.documents_deduplicated > 0
         assert stats.total_output_documents <= 500  # Approximately half (exact dedup)
 
+    def test_pipeline_streaming_with_exact_dedup(self, temp_dir):
+        """Test streaming mode with exact deduplication."""
+        from src.data.pipeline import DataPipeline, PipelineConfig
+        import json
+
+        # Create input with duplicates
+        input_file = temp_dir / "exact_dedup_input.jsonl"
+        with open(input_file, 'w') as f:
+            for i in range(100):
+                # Each doc appears twice
+                doc = {"id": f"doc_{i}_v1", "text": f"Exact document {i} content"}
+                f.write(json.dumps(doc) + "\n")
+                doc = {"id": f"doc_{i}_v2", "text": f"Exact document {i} content"}  # Exact duplicate
+                f.write(json.dumps(doc) + "\n")
+
+        pipeline_config = PipelineConfig(
+            input_path=str(input_file),
+            output_dir=str(temp_dir / "exact_dedup_output"),
+            enable_cleaning=False,
+            enable_deduplication=True,
+            enable_heuristic_filters=False,
+            enable_quality_filters=False,
+            enable_domain_mixing=False,
+            dedup_config={"method": "exact"},  # Use exact deduplication
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(pipeline_config)
+        stats = pipeline.process_and_save()
+
+        # Should have removed ~100 exact duplicates
+        assert stats.total_input_documents == 200
+        assert stats.documents_deduplicated >= 95  # Allow small variance
+        assert stats.total_output_documents <= 105
+
+    def test_pipeline_streaming_with_both_dedup(self, temp_dir):
+        """Test streaming mode with both MinHash and exact deduplication."""
+        from src.data.pipeline import DataPipeline, PipelineConfig
+        import json
+
+        # Create input with both near and exact duplicates
+        input_file = temp_dir / "both_dedup_input.jsonl"
+        with open(input_file, 'w') as f:
+            for i in range(50):
+                # Original
+                doc = {"id": f"doc_{i}_orig", "text": f"Original document {i} with some content"}
+                f.write(json.dumps(doc) + "\n")
+                # Exact duplicate
+                doc = {"id": f"doc_{i}_exact", "text": f"Original document {i} with some content"}
+                f.write(json.dumps(doc) + "\n")
+                # Near duplicate (slightly modified)
+                doc = {"id": f"doc_{i}_near", "text": f"Original document {i} with some content and a small change"}
+                f.write(json.dumps(doc) + "\n")
+
+        pipeline_config = PipelineConfig(
+            input_path=str(input_file),
+            output_dir=str(temp_dir / "both_dedup_output"),
+            enable_cleaning=False,
+            enable_deduplication=True,
+            enable_heuristic_filters=False,
+            enable_quality_filters=False,
+            enable_domain_mixing=False,
+            dedup_config={
+                "method": "both",
+                "threshold": 0.7,  # MinHash threshold
+                "num_perm": 128,
+            },
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(pipeline_config)
+        stats = pipeline.process_and_save()
+
+        # Should remove both exact and near duplicates
+        assert stats.total_input_documents == 150
+        assert stats.documents_deduplicated >= 50  # At least the exact duplicates
+        assert stats.total_output_documents <= 100  # Some near duplicates may remain
+
     def test_pipeline_streaming_domain_mixing_raises_error(self, temp_dir):
         """Test that enabling domain mixing in streaming mode raises an error."""
         from src.data.pipeline import DataPipeline, PipelineConfig
@@ -1213,3 +1291,95 @@ class TestDoReMiPipelineIntegration:
         # Note: This may not always hold due to exponential updates, but generally true
         # Just verify we're not diverging
         assert weight_history[-1] < 0.5, "Weights should not diverge to extreme values"
+
+    def test_doremi_with_loss_feedback_file(self, temp_dir):
+        """Test DoReMi pipeline with loss feedback loaded from file."""
+        from src.data.pipeline import DataPipeline, PipelineConfig
+        import json
+
+        # Create loss feedback file
+        loss_feedback_file = temp_dir / "loss_feedback.json"
+        loss_feedback_data = {
+            "domain_losses": {
+                "code": 4.5,
+                "common_crawl": 2.0,
+                "wikipedia": 3.0,
+                "academic": 3.5,
+                "books": 3.2,
+                "news": 2.8,
+                "social": 3.0,
+            },
+            "reference_losses": {
+                "code": 3.0,
+                "common_crawl": 3.0,
+                "wikipedia": 3.0,
+                "academic": 3.0,
+                "books": 3.0,
+                "news": 3.0,
+                "social": 3.0,
+            },
+            "reference_weights": {
+                "code": 0.143,
+                "common_crawl": 0.143,
+                "wikipedia": 0.143,
+                "academic": 0.143,
+                "books": 0.143,
+                "news": 0.143,
+                "social": 0.142,
+            }
+        }
+
+        with open(loss_feedback_file, 'w') as f:
+            json.dump(loss_feedback_data, f)
+
+        # Create input documents
+        input_data = [
+            {"id": f"code_{i}", "text": "def foo(): pass\n" * 20}
+            for i in range(50)
+        ] + [
+            {"id": f"web_{i}", "text": "Generic web content " * 20}
+            for i in range(50)
+        ] + [
+            {"id": f"wiki_{i}", "text": "[[Category:Test]] Wikipedia content " * 20}
+            for i in range(50)
+        ]
+
+        # Setup pipeline with DoReMi and loss feedback path
+        pipeline_config = PipelineConfig(
+            input_path=None,
+            output_dir=str(temp_dir / "doremi_with_file"),
+            enable_cleaning=False,
+            enable_deduplication=False,
+            enable_heuristic_filters=False,
+            enable_quality_filters=False,
+            enable_domain_mixing=True,
+            domain_config={
+                "composition": "doremi",
+                "num_iterations": 3,
+                "doremi_loss_feedback_path": str(loss_feedback_file),
+                "temperature": 0.5,
+                "target_size": 150,
+                "random_seed": 42,
+            },
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(pipeline_config)
+
+        # Verify loss feedback was loaded
+        assert pipeline.domain_mixer.domain_losses is not None
+        assert pipeline.domain_mixer.reference_losses is not None
+        assert pipeline.domain_mixer.reference_weights is not None
+
+        # Run pipeline with DoReMi optimization
+        stats = pipeline.process_and_save(input_data=input_data)
+
+        assert stats.total_input_documents == 150
+        assert stats.total_output_documents == 150
+
+        # Verify domain stats show optimization occurred
+        assert stats.domain_stats["iteration"] > 0
+        assert stats.domain_stats["reference_losses"] is not None
+
+        # Code has high excess loss (4.5 - 3.0 = 1.5) so should be upweighted
+        assert stats.domain_stats["target_weights"]["code"] > 0.143

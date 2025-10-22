@@ -158,7 +158,15 @@ class MinHashDeduplicator:
         return_duplicates: bool = False,
     ) -> Tuple[List[str], List[str], Optional[Dict]]:
         """
-        Deduplicate a list of documents.
+        Deduplicate a list of documents using MinHash LSH with Jaccard verification.
+
+        Implements the two-phase deduplication algorithm from Lee et al. (2022):
+        1. Query LSH index for candidate duplicates (approximate)
+        2. Verify candidates by computing exact Jaccard similarity
+        3. Only mark as duplicate if Jaccard >= threshold
+
+        This ensures unrelated documents that merely collide in LSH buckets
+        are not incorrectly filtered.
 
         Args:
             documents: List of document texts
@@ -167,6 +175,10 @@ class MinHashDeduplicator:
 
         Returns:
             Tuple of (unique_docs, unique_ids, duplicate_map)
+
+        References:
+            Lee et al. (2022). "Deduplicating Training Data Makes Language Models Better."
+            Broder (1997). "On the resemblance and containment of documents."
         """
         start_time = time.time()
 
@@ -178,6 +190,10 @@ class MinHashDeduplicator:
         duplicate_map = {} if return_duplicates else None
 
         if self.has_datasketch:
+            # Store document texts for Jaccard verification
+            # Maps doc_id -> text for already-indexed documents
+            stored_texts = {}
+
             # Use LSH for efficient near-duplicate detection
             for i, (doc, doc_id) in enumerate(zip(documents, doc_ids)):
                 if not doc:
@@ -185,18 +201,33 @@ class MinHashDeduplicator:
 
                 minhash = self.compute_minhash(doc)
 
-                # Check for duplicates
-                result = self.lsh.query(minhash)
+                # Phase 1: Query LSH for candidate duplicates (approximate)
+                candidates = self.lsh.query(minhash)
 
-                if not result:
-                    # No duplicate found, add to index
+                # Phase 2: Verify candidates with exact Jaccard similarity
+                is_duplicate = False
+                if candidates:
+                    for candidate_id in candidates:
+                        if candidate_id in stored_texts:
+                            # Compute exact Jaccard similarity
+                            jaccard_sim = self.compute_jaccard_similarity(
+                                doc, stored_texts[candidate_id]
+                            )
+
+                            # Only mark as duplicate if similarity >= threshold
+                            if jaccard_sim >= self.threshold:
+                                is_duplicate = True
+                                if return_duplicates:
+                                    duplicate_map[doc_id] = candidate_id
+                                break
+
+                if not is_duplicate:
+                    # Not a duplicate (either no candidates or all below threshold)
+                    # Add to index and store text for future verification
                     self.lsh.insert(doc_id, minhash)
+                    stored_texts[doc_id] = doc
                     unique_docs.append(doc)
                     unique_ids.append(doc_id)
-                else:
-                    # Duplicate found
-                    if return_duplicates:
-                        duplicate_map[doc_id] = result[0]
         else:
             # Fallback to simple hash-based deduplication
             for doc, doc_id in zip(documents, doc_ids):

@@ -15,6 +15,7 @@ References:
 import re
 import json
 import random
+import warnings
 from collections import defaultdict, Counter
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Tuple, Any
@@ -313,8 +314,21 @@ class GroupDROOptimizer:
             ref_losses = np.array([reference_losses.get(d, 0.0) for d in domain_names])
             excess_losses = losses - ref_losses
         else:
-            # Fallback mode (backward compatibility): use mean-centered losses
-            # NOTE: This is NOT compliant with the DoReMi paper
+            # DoReMi algorithm requires reference losses for proper excess loss computation
+            # Fallback to mean-centered losses is NOT compliant with Xie et al. (2023)
+            warnings.warn(
+                "DoReMi optimization called without reference_losses. "
+                "This violates the DoReMi algorithm (Xie et al., 2023) which requires:\n"
+                "  1. Train a reference model with reference_weights mixture\n"
+                "  2. Measure reference_losses on validation data\n"
+                "  3. Compute excess_loss = proxy_loss - reference_loss\n"
+                "\n"
+                "Falling back to mean-centered losses (NOT DoReMi-compliant). "
+                "Results may not match paper's theoretical guarantees.\n"
+                "\n"
+                "To use DoReMi properly, provide reference_losses parameter.",
+                UserWarning
+            )
             mean_loss = np.mean(losses)
             excess_losses = losses - mean_loss
 
@@ -365,6 +379,7 @@ class DomainMixer:
         temperature: float = 0.5,
         num_iterations: int = 1,
         random_seed: int = 42,
+        loss_feedback_path: Optional[str] = None,
     ):
         self.composition_name = composition
         self.identification_method = identification_method
@@ -372,6 +387,7 @@ class DomainMixer:
         self.temperature = temperature
         self.num_iterations = num_iterations
         self.random_seed = random_seed
+        self.loss_feedback_path = loss_feedback_path
 
         # Initialize components
         self.identifier = DomainIdentifier(method=identification_method)
@@ -393,6 +409,13 @@ class DomainMixer:
 
         self.domain_weights.normalize()
 
+        # Load loss feedback if path provided (for DoReMi)
+        self.domain_losses = None
+        self.reference_losses = None
+        self.reference_weights = None
+        if loss_feedback_path and composition == "doremi":
+            self._load_loss_feedback(loss_feedback_path)
+
         # Statistics tracking
         self.total_documents_processed = 0
         self.total_tokens_processed = 0
@@ -401,6 +424,36 @@ class DomainMixer:
         # Set random seed
         random.seed(random_seed)
         np.random.seed(random_seed)
+
+    def _load_loss_feedback(self, path: str) -> None:
+        """
+        Load loss feedback from JSON file for DoReMi optimization.
+
+        Expected JSON format:
+        {
+            "domain_losses": {"code": 2.5, "common_crawl": 3.2, ...},
+            "reference_losses": {"code": 2.3, "common_crawl": 2.8, ...},
+            "reference_weights": {"code": 0.14, "common_crawl": 0.14, ...}
+        }
+
+        Args:
+            path: Path to JSON file containing loss feedback
+        """
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+
+            self.domain_losses = data.get("domain_losses")
+            self.reference_losses = data.get("reference_losses")
+            self.reference_weights = data.get("reference_weights")
+
+            if self.domain_losses is None:
+                raise ValueError("Loss feedback file missing 'domain_losses' field")
+
+        except FileNotFoundError:
+            print(f"Warning: Loss feedback file not found: {path}")
+        except json.JSONDecodeError as e:
+            print(f"Warning: Invalid JSON in loss feedback file: {e}")
 
     def identify_domain(self, document: Dict[str, Any]) -> Tuple[str, float]:
         """
