@@ -32,6 +32,7 @@ class FastTextQualityClassifier:
         self,
         model_path: Optional[str] = None,
         threshold: float = 0.5,
+        allow_fallback: bool = False,
     ):
         """
         Initialize FastText quality classifier.
@@ -39,17 +40,38 @@ class FastTextQualityClassifier:
         Args:
             model_path: Path to trained FastText model
             threshold: Quality score threshold (0-1)
+            allow_fallback: If True, falls back to heuristic scoring when no model
+                          is provided. If False (default), raises ValueError.
+
+        Raises:
+            ValueError: If model_path is None and allow_fallback is False.
+
+        References:
+            Joulin et al. (2016). "Bag of Tricks for Efficient Text Classification."
         """
         self.model_path = model_path
         self.threshold = threshold
         self.model = None
+        self.allow_fallback = allow_fallback
 
         # Try to load model if path provided
         if model_path:
             self._load_model(model_path)
         else:
+            if not allow_fallback:
+                raise ValueError(
+                    "FastTextQualityClassifier requires a trained model to comply with "
+                    "Joulin et al. (2016) methodology. Either:\n"
+                    "  1. Provide model_path to a trained FastText model (.bin file)\n"
+                    "  2. Set allow_fallback=True to use heuristic scoring (NOT recommended)\n"
+                    "  3. Disable quality filtering in your pipeline config\n"
+                    "\n"
+                    "Note: Heuristic fallback does not implement the cited SOTA quality "
+                    "classification and may produce unreliable results."
+                )
             warnings.warn(
-                "No FastText model path provided. Using placeholder implementation.",
+                "No FastText model path provided. Using placeholder heuristic implementation. "
+                "This does NOT implement the Joulin et al. (2016) FastText methodology.",
                 UserWarning,
             )
 
@@ -263,6 +285,7 @@ class KenLMQualityFilter:
         self,
         model_path: Optional[str] = None,
         max_perplexity: float = 1000.0,
+        allow_fallback: bool = False,
     ):
         """
         Initialize KenLM quality filter.
@@ -270,16 +293,39 @@ class KenLMQualityFilter:
         Args:
             model_path: Path to KenLM .arpa or .bin model file
             max_perplexity: Maximum perplexity threshold (higher = more permissive)
+            allow_fallback: If True, accepts all documents when no model is provided.
+                          If False (default), raises ValueError.
+
+        Raises:
+            ValueError: If model_path is None and allow_fallback is False.
+
+        References:
+            Kim et al. (2024). "DataComp-LM: In Search of the Next Generation of
+            Training Sets for Language Models."
+            Wenzek et al. (2019). "CCNet." arXiv:1911.00359
         """
         self.model_path = model_path
         self.max_perplexity = max_perplexity
         self.model = None
+        self.allow_fallback = allow_fallback
 
         if model_path:
             self._load_model(model_path)
         else:
+            if not allow_fallback:
+                raise ValueError(
+                    "KenLMQualityFilter requires a trained language model to comply with "
+                    "Kim et al. (2024) and Wenzek et al. (2019) perplexity filtering. Either:\n"
+                    "  1. Provide model_path to a KenLM model (.arpa or .bin file)\n"
+                    "  2. Set allow_fallback=True to accept all documents (NOT recommended)\n"
+                    "  3. Disable KenLM filtering in your pipeline config\n"
+                    "\n"
+                    "Note: Fallback mode does not implement perplexity-based filtering "
+                    "and accepts all documents regardless of quality."
+                )
             warnings.warn(
-                "No KenLM model path provided. Filter will accept all documents.",
+                "No KenLM model path provided. Filter will accept all documents. "
+                "This does NOT implement perplexity-based filtering from Kim et al. (2024).",
                 UserWarning,
             )
 

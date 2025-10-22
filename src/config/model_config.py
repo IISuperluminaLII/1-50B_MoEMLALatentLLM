@@ -140,6 +140,11 @@ class TrainingConfig:
     num_predict_tokens: int = 2  # Predict this many future tokens
     mtp_tokens: int = 2  # Alias for num_predict_tokens (backward compatibility)
 
+    # Loss weights (DeepSeek V3 paper specifies λ coefficients)
+    lm_loss_weight: float = 1.0  # λ_LM: Next-token prediction loss weight
+    mtp_loss_weights: Optional[List[float]] = None  # λ_MTP[d]: Per-depth MTP weights (None = uniform)
+    moe_aux_loss_weight: float = 0.001  # λ_aux: MoE auxiliary loss weight (sum across layers)
+
     # Schedule
     train_steps: int = 500000
     eval_interval: int = 1000
