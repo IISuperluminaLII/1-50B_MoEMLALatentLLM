@@ -94,8 +94,9 @@ class DeepSeekV3Trainer:
                 # Training step
                 metrics = self.train_step(batch)
 
-                # Update token count
-                tokens_this_step = self.config.training.tokens_per_step()
+                # Update token count from actual batch size (not global_batch_size estimate)
+                # This correctly handles micro-batches and padding
+                tokens_this_step = metrics["tokens_this_step"]
                 self.total_tokens_processed += tokens_this_step
 
                 # Logging
@@ -120,8 +121,45 @@ class DeepSeekV3Trainer:
         self.save_checkpoint(is_final=True)
         self.log(f"Training completed in {time.time() - start_time:.2f}s")
 
+    def _count_tokens_in_batch(self, batch: Dict[str, torch.Tensor]) -> int:
+        """
+        Count actual non-padding tokens in a batch.
+
+        Uses attention_mask if available to exclude padding tokens,
+        otherwise falls back to counting all input_ids.
+
+        Args:
+            batch: Dictionary containing batch data
+
+        Returns:
+            Number of actual (non-padding) tokens in the batch
+        """
+        if "attention_mask" in batch and batch["attention_mask"] is not None:
+            # Count non-padding tokens using attention mask
+            return int(batch["attention_mask"].sum().item())
+        elif "input_ids" in batch:
+            # Fallback: count all tokens (assumes no padding or padding is minimal)
+            return int(batch["input_ids"].numel())
+        else:
+            # Last resort: estimate from global batch size
+            # This should rarely happen and will log a warning
+            self.log("[WARNING] Could not determine token count from batch, using estimated value")
+            return self.config.training.tokens_per_step()
+
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """Single training step."""
+        """
+        Single training step.
+
+        Args:
+            batch: Dictionary containing batch data (input_ids, attention_mask, labels, etc.)
+
+        Returns:
+            Dictionary of metrics including 'tokens_this_step' for accurate token counting
+        """
+        # Count actual tokens in this batch BEFORE moving to device
+        # (to avoid unnecessary GPU memory usage for this computation)
+        tokens_this_step = self._count_tokens_in_batch(batch)
+
         # Move batch to device
         batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()}
 
@@ -158,6 +196,7 @@ class DeepSeekV3Trainer:
             "lr": self.lr_scheduler.get_last_lr()[0],
             "step": self.step,
             "tokens_processed": self.total_tokens_processed,
+            "tokens_this_step": tokens_this_step,  # Return actual token count for this step
         }
 
         # MoE metrics
