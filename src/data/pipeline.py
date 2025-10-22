@@ -144,11 +144,56 @@ class DataPipeline:
 
         # Initialize quality filter
         if self.config.enable_quality_filters:
-            from .quality_filters import FastTextQualityClassifier
-            self.quality_filter = FastTextQualityClassifier(
-                model_path=self.config.quality_config.get("fasttext_model_path"),
-                threshold=self.config.quality_config.get("fasttext_threshold", 0.5),
+            from .quality_filters import (
+                FastTextQualityClassifier,
+                KenLMQualityFilter,
+                QualityEnsemble,
             )
+
+            use_fasttext = self.config.quality_config.get("use_fasttext", True)
+            use_kenlm = self.config.quality_config.get("use_kenlm", False)
+
+            # Initialize individual filters
+            fasttext_filter = None
+            kenlm_filter = None
+
+            if use_fasttext:
+                fasttext_filter = FastTextQualityClassifier(
+                    model_path=self.config.quality_config.get("fasttext_model_path"),
+                    threshold=self.config.quality_config.get("fasttext_threshold", 0.5),
+                )
+
+            if use_kenlm:
+                kenlm_model_path = self.config.quality_config.get("kenlm_model_path")
+                if not kenlm_model_path:
+                    raise ValueError(
+                        "KenLM quality filter enabled (use_kenlm=True) but no "
+                        "kenlm_model_path provided. Please specify a path to a "
+                        "KenLM .arpa or .bin model file."
+                    )
+                kenlm_filter = KenLMQualityFilter(
+                    model_path=kenlm_model_path,
+                    max_perplexity=self.config.quality_config.get("kenlm_max_perplexity", 1000.0),
+                )
+
+            # Use ensemble if both filters enabled, otherwise use single filter
+            if fasttext_filter and kenlm_filter:
+                self.quality_filter = QualityEnsemble(
+                    fasttext_filter=fasttext_filter,
+                    kenlm_filter=kenlm_filter,
+                    fasttext_weight=self.config.quality_config.get("fasttext_weight", 0.6),
+                    kenlm_weight=self.config.quality_config.get("kenlm_weight", 0.4),
+                    ensemble_threshold=self.config.quality_config.get("ensemble_threshold", 0.5),
+                )
+            elif fasttext_filter:
+                self.quality_filter = fasttext_filter
+            elif kenlm_filter:
+                self.quality_filter = kenlm_filter
+            else:
+                raise ValueError(
+                    "Quality filtering enabled but both use_fasttext and use_kenlm "
+                    "are False. Enable at least one quality filter."
+                )
         else:
             self.quality_filter = None
 

@@ -8,7 +8,7 @@ References:
     Xie et al. (2023). "DoReMi: Optimizing Data Mixtures Speeds Up Language
     Model Pretraining." arXiv:2305.10429
 
-    Zhou et al. (2025). "Data × LLM: From Principles to Practices."
+    Zhou et al. (2025). "A Survey of LLM × DATA."
     arXiv:2505.18458, Section on domain composition
 """
 
@@ -70,6 +70,9 @@ class DomainWeights:
     weights: Dict[str, float] = field(default_factory=dict)
     document_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     token_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Track actual sampled output (including duplicates from oversampling)
+    sampled_document_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    sampled_token_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     iteration: int = 0
 
     def normalize(self) -> None:
@@ -84,6 +87,8 @@ class DomainWeights:
             "weights": self.weights,
             "document_counts": dict(self.document_counts),
             "token_counts": dict(self.token_counts),
+            "sampled_document_counts": dict(self.sampled_document_counts),
+            "sampled_token_counts": dict(self.sampled_token_counts),
             "iteration": self.iteration,
         }
 
@@ -508,6 +513,10 @@ class DomainMixer:
         # Step 4: Sample from each domain according to adjusted weights
         mixed_documents = []
 
+        # Reset sampled counts before new sampling
+        self.domain_weights.sampled_document_counts = defaultdict(int)
+        self.domain_weights.sampled_token_counts = defaultdict(int)
+
         for domain, target_count in target_counts.items():
             available_docs = domain_buckets.get(domain, [])
 
@@ -521,6 +530,14 @@ class DomainMixer:
                 sampled = random.sample(available_docs, target_count)
 
             mixed_documents.extend(sampled)
+
+            # Track actual sampled output (including duplicates)
+            self.domain_weights.sampled_document_counts[domain] += len(sampled)
+            for doc in sampled:
+                # Estimate tokens for sampled documents
+                text_length = len(doc.get("text", ""))
+                estimated_tokens = text_length // 4
+                self.domain_weights.sampled_token_counts[domain] += estimated_tokens
 
         # Step 5: Shuffle final mix
         random.shuffle(mixed_documents)
@@ -549,6 +566,48 @@ class DomainMixer:
         self.domain_weights.weights = new_weights
         self.domain_weights.iteration += 1
 
+    def mix_documents_with_feedback(
+        self,
+        documents: List[Dict[str, Any]],
+        domain_losses: Dict[str, float],
+        num_iterations: int = 1,
+        target_size: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Apply domain mixing with DoReMi feedback loop.
+
+        This method iteratively updates domain weights based on per-domain losses
+        before sampling the final mixture, implementing the DoReMi algorithm's
+        minimax reweighting strategy.
+
+        Args:
+            documents: Input documents to mix
+            domain_losses: Per-domain loss statistics (e.g., perplexity)
+            num_iterations: Number of DoReMi weight update iterations
+            target_size: Target number of documents (None = use all)
+
+        Returns:
+            Mixed document list with DoReMi-optimized composition
+
+        Example:
+            >>> mixer = DomainMixer(composition="doremi")
+            >>> # After training a proxy model, collect domain losses
+            >>> losses = {"code": 2.5, "common_crawl": 3.2, "wikipedia": 2.1}
+            >>> mixed = mixer.mix_documents_with_feedback(docs, losses, num_iterations=3)
+        """
+        if self.composition_name != "doremi":
+            raise ValueError(
+                "mix_documents_with_feedback requires composition='doremi'. "
+                f"Current composition: {self.composition_name}"
+            )
+
+        # Run DoReMi weight optimization for requested iterations
+        for _ in range(num_iterations):
+            self.optimize_weights_doremi(domain_losses)
+
+        # Now sample using the optimized weights
+        return self.mix_documents(documents, target_size=target_size)
+
     def get_statistics(self) -> Dict[str, Any]:
         """
         Get comprehensive domain mixing statistics.
@@ -556,19 +615,33 @@ class DomainMixer:
         Returns:
             Statistics dictionary with domain distributions and counts
         """
-        # Calculate actual domain distribution
-        actual_distribution = {}
+        # Calculate input domain distribution (what was classified)
+        input_distribution = {}
         if self.total_documents_processed > 0:
             for domain in DOMAIN_CATEGORIES:
                 count = self.domain_weights.document_counts[domain]
-                actual_distribution[domain] = count / self.total_documents_processed
+                input_distribution[domain] = count / self.total_documents_processed
+
+        # Calculate actual sampled distribution (what was output, including duplicates)
+        actual_distribution = {}
+        total_sampled = sum(self.domain_weights.sampled_document_counts.values())
+        if total_sampled > 0:
+            for domain in DOMAIN_CATEGORIES:
+                count = self.domain_weights.sampled_document_counts[domain]
+                actual_distribution[domain] = count / total_sampled
+        else:
+            # Fallback to input distribution if no sampling has occurred
+            actual_distribution = input_distribution
 
         return {
             "composition": self.composition_name,
             "target_weights": self.domain_weights.weights,
+            "input_distribution": input_distribution,
             "actual_distribution": actual_distribution,
             "document_counts": dict(self.domain_weights.document_counts),
             "token_counts": dict(self.domain_weights.token_counts),
+            "sampled_document_counts": dict(self.domain_weights.sampled_document_counts),
+            "sampled_token_counts": dict(self.domain_weights.sampled_token_counts),
             "total_documents": self.total_documents_processed,
             "total_tokens": self.total_tokens_processed,
             "iteration": self.domain_weights.iteration,

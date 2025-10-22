@@ -414,3 +414,162 @@ class TestPresetCompositions:
         assert comp["common_crawl"] == 0.50
         assert comp["code"] == 0.15
         assert comp["wikipedia"] == 0.12
+
+
+class TestDoReMiOptimization:
+    """Test DoReMi weight optimization functionality."""
+
+    def test_optimize_weights_upweights_high_loss_domains(self):
+        """Test that domains with higher loss get increased weight."""
+        mixer = DomainMixer(composition="doremi", random_seed=42)
+
+        # Get initial weights (should be uniform)
+        initial_weights = mixer.domain_weights.weights.copy()
+
+        # Create synthetic domain losses: code has highest loss
+        domain_losses = {
+            "code": 5.0,  # High loss - should get upweighted
+            "common_crawl": 3.0,  # Medium loss
+            "wikipedia": 2.0,  # Low loss
+            "academic": 2.5,
+            "books": 2.8,
+            "news": 2.2,
+            "social": 2.3,
+        }
+
+        # Run optimization
+        mixer.optimize_weights_doremi(domain_losses)
+
+        # Get updated weights
+        updated_weights = mixer.domain_weights.weights
+
+        # Verify high-loss domain (code) got upweighted
+        assert updated_weights["code"] > initial_weights["code"], \
+            "High-loss domain should get increased weight"
+
+        # Verify low-loss domain (wikipedia) got downweighted
+        assert updated_weights["wikipedia"] < initial_weights["wikipedia"], \
+            "Low-loss domain should get decreased weight"
+
+        # Verify iteration counter incremented
+        assert mixer.domain_weights.iteration == 1
+
+    def test_mix_documents_with_feedback(self):
+        """Test DoReMi feedback loop integrates optimization and sampling."""
+        mixer = DomainMixer(composition="doremi", random_seed=42)
+
+        # Create test documents
+        documents = [
+            {"text": "def foo(): pass\nimport sys", "id": f"code_{i}"} for i in range(50)
+        ] + [
+            {"text": "Generic web content about various topics.", "id": f"web_{i}"} for i in range(50)
+        ]
+
+        # Domain losses: code has HIGH loss (hard to learn), web has LOW loss (easy)
+        # DoReMi upweights HIGH LOSS domains to focus on harder examples
+        domain_losses = {
+            "code": 4.0,  # High loss - hard domain, should be upweighted
+            "common_crawl": 2.0,  # Low loss - easy domain
+            "wikipedia": 3.0,
+            "academic": 3.5,
+            "books": 3.2,
+            "news": 3.3,
+            "social": 3.4,
+        }
+
+        # Apply DoReMi with feedback
+        mixed = mixer.mix_documents_with_feedback(
+            documents,
+            domain_losses,
+            num_iterations=3,
+            target_size=100,
+        )
+
+        # Verify output
+        assert len(mixed) == 100
+        assert mixer.domain_weights.iteration == 3
+
+        # Verify code weight increased (high loss domains get upweighted in DoReMi)
+        stats = mixer.get_statistics()
+        assert stats["target_weights"]["code"] > 1.0 / 7, \
+            "Code domain (high loss) should have higher than uniform weight after optimization"
+
+    def test_doremi_requires_correct_composition(self):
+        """Test that mix_documents_with_feedback requires composition='doremi'."""
+        mixer = DomainMixer(composition="balanced", random_seed=42)
+
+        documents = [{"text": "Test", "id": "1"}]
+        losses = {"code": 2.0, "common_crawl": 3.0}
+
+        with pytest.raises(ValueError, match="requires composition='doremi'"):
+            mixer.mix_documents_with_feedback(documents, losses)
+
+    def test_optimize_weights_without_doremi_composition_raises(self):
+        """Test that optimize_weights_doremi raises if not using doremi composition."""
+        mixer = DomainMixer(composition="deepseek_v3", random_seed=42)
+
+        losses = {"code": 2.0, "common_crawl": 3.0}
+
+        with pytest.raises(ValueError, match="DoReMi optimizer not initialized"):
+            mixer.optimize_weights_doremi(losses)
+
+
+class TestDomainStatisticsCorrectness:
+    """Test that domain statistics report actual sampled mix, not input corpus."""
+
+    def test_actual_distribution_reflects_sampled_output(self):
+        """Test that actual_distribution reports what was sampled, not what was input."""
+        # Create mixer with 50/50 target
+        mixer = DomainMixer(
+            composition={"code": 0.5, "common_crawl": 0.5},
+            random_seed=42,
+        )
+
+        # Create imbalanced input: 80% code, 20% web
+        documents = [
+            {"text": "def foo(): pass", "id": f"code_{i}"} for i in range(80)
+        ] + [
+            {"text": "Web content here.", "id": f"web_{i}"} for i in range(20)
+        ]
+
+        # Sample with target 50/50 mix
+        mixed = mixer.mix_documents(documents, target_size=100)
+
+        stats = mixer.get_statistics()
+
+        # Input distribution should reflect corpus composition (80/20)
+        assert abs(stats["input_distribution"]["code"] - 0.8) < 0.01
+        assert abs(stats["input_distribution"]["common_crawl"] - 0.2) < 0.01
+
+        # Actual distribution should reflect sampled output (50/50)
+        assert abs(stats["actual_distribution"]["code"] - 0.5) < 0.1
+        assert abs(stats["actual_distribution"]["common_crawl"] - 0.5) < 0.1
+
+    def test_oversampling_counted_in_actual_distribution(self):
+        """Test that duplicates from oversampling are counted in actual_distribution."""
+        mixer = DomainMixer(
+            composition={"code": 0.8, "common_crawl": 0.2},
+            random_seed=42,
+        )
+
+        # Only 10 code documents available
+        documents = [
+            {"text": "def foo(): pass", "id": f"code_{i}"} for i in range(10)
+        ] + [
+            {"text": "Web content here.", "id": f"web_{i}"} for i in range(10)
+        ]
+
+        # Request 100 documents with 80% code - will require oversampling
+        mixed = mixer.mix_documents(documents, target_size=100)
+
+        assert len(mixed) == 100
+
+        stats = mixer.get_statistics()
+
+        # Sampled counts should include duplicates
+        assert stats["sampled_document_counts"]["code"] == 80
+        assert stats["sampled_document_counts"]["common_crawl"] == 20
+
+        # Actual distribution should be 80/20
+        assert abs(stats["actual_distribution"]["code"] - 0.8) < 0.01
+        assert abs(stats["actual_distribution"]["common_crawl"] - 0.2) < 0.01

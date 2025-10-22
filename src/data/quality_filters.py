@@ -1,18 +1,22 @@
 """
 Quality filtering utilities for data sanitization.
 
-Implements FastText-based quality classification and other quality metrics
-for filtering low-quality documents from training data.
+Implements FastText-based quality classification, KenLM perplexity filtering,
+and ensemble methods for filtering low-quality documents from training data.
 
 References:
     Joulin et al. (2016). "Bag of Tricks for Efficient Text Classification."
     arXiv:1607.01759
+
+    Kim et al. (2024). "DataComp-LM: In Search of the Next Generation of
+    Training Sets for Language Models." arXiv:2406.11794
 
     Zhou et al. (2025). "A Survey of LLM × DATA."
     arXiv:2505.18458
 """
 import warnings
 from typing import Optional, List, Tuple
+from pathlib import Path
 
 
 class FastTextQualityClassifier:
@@ -240,3 +244,217 @@ class FastTextQualityClassifier:
             )
         except Exception as e:
             raise RuntimeError(f"Failed to train FastText model: {e}")
+
+
+class KenLMQualityFilter:
+    """
+    KenLM-based perplexity filter for document quality assessment.
+
+    Uses language model perplexity as a proxy for document quality. Low
+    perplexity indicates text that matches the language model's learned
+    distribution (typically high-quality, coherent text).
+
+    References:
+        Kim et al. (2024). DataComp-LM, Section on perplexity filtering
+        Wenzek et al. (2019). CCNet, arXiv:1911.00359
+    """
+
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        max_perplexity: float = 1000.0,
+    ):
+        """
+        Initialize KenLM quality filter.
+
+        Args:
+            model_path: Path to KenLM .arpa or .bin model file
+            max_perplexity: Maximum perplexity threshold (higher = more permissive)
+        """
+        self.model_path = model_path
+        self.max_perplexity = max_perplexity
+        self.model = None
+
+        if model_path:
+            self._load_model(model_path)
+        else:
+            warnings.warn(
+                "No KenLM model path provided. Filter will accept all documents.",
+                UserWarning,
+            )
+
+    def _load_model(self, model_path: str):
+        """
+        Load KenLM model from file.
+
+        Args:
+            model_path: Path to .arpa or .bin model file
+        """
+        try:
+            import kenlm
+            model_file = Path(model_path)
+
+            if not model_file.exists():
+                raise FileNotFoundError(f"KenLM model not found: {model_path}")
+
+            self.model = kenlm.Model(str(model_file))
+
+        except ImportError:
+            warnings.warn(
+                "kenlm package not installed. Install with: pip install https://github.com/kpu/kenlm/archive/master.zip",
+                UserWarning,
+            )
+            self.model = None
+        except Exception as e:
+            warnings.warn(
+                f"Could not load KenLM model from {model_path}: {e}",
+                UserWarning,
+            )
+            self.model = None
+
+    def compute_perplexity(self, text: str) -> float:
+        """
+        Compute perplexity of text using KenLM model.
+
+        Args:
+            text: Document text
+
+        Returns:
+            Perplexity score (lower = better quality)
+        """
+        if not self.model:
+            # No model loaded, return neutral perplexity
+            return self.max_perplexity / 2
+
+        try:
+            # KenLM computes log10 probability
+            # Perplexity = 10^(-log_prob / num_words)
+            log_prob = self.model.score(text)
+            words = text.split()
+            num_words = max(len(words), 1)  # Avoid division by zero
+
+            # Convert log10 prob to perplexity
+            perplexity = 10 ** (-log_prob / num_words)
+
+            return perplexity
+
+        except Exception as e:
+            warnings.warn(f"Error computing perplexity: {e}", UserWarning)
+            return self.max_perplexity
+
+    def predict(self, text: str) -> bool:
+        """
+        Predict if document passes quality threshold.
+
+        Args:
+            text: Document text
+
+        Returns:
+            True if perplexity is below max_perplexity threshold
+        """
+        perplexity = self.compute_perplexity(text)
+        return perplexity <= self.max_perplexity
+
+    def predict_score(self, text: str) -> float:
+        """
+        Compute quality score (inverse of normalized perplexity).
+
+        Args:
+            text: Document text
+
+        Returns:
+            Quality score in [0, 1], where 1 is best quality
+        """
+        perplexity = self.compute_perplexity(text)
+
+        # Normalize perplexity to [0, 1] score
+        # score = 1 - min(perplexity / max_perplexity, 1.0)
+        # This maps perplexity=0 -> score=1, perplexity>=max -> score=0
+        if perplexity >= self.max_perplexity:
+            return 0.0
+
+        return 1.0 - (perplexity / self.max_perplexity)
+
+
+class QualityEnsemble:
+    """
+    Ensemble quality filter combining FastText and KenLM.
+
+    Combines multiple quality signals (FastText classification, KenLM perplexity)
+    using weighted averaging to make final quality decisions.
+
+    This implements the ensemble approach described in DataComp-LM and used
+    in DeepSeek data preprocessing.
+    """
+
+    def __init__(
+        self,
+        fasttext_filter: Optional[FastTextQualityClassifier] = None,
+        kenlm_filter: Optional[KenLMQualityFilter] = None,
+        fasttext_weight: float = 0.6,
+        kenlm_weight: float = 0.4,
+        ensemble_threshold: float = 0.5,
+    ):
+        """
+        Initialize quality ensemble.
+
+        Args:
+            fasttext_filter: FastText quality classifier (optional)
+            kenlm_filter: KenLM perplexity filter (optional)
+            fasttext_weight: Weight for FastText score in ensemble
+            kenlm_weight: Weight for KenLM score in ensemble
+            ensemble_threshold: Final threshold for accepting documents
+        """
+        self.fasttext_filter = fasttext_filter
+        self.kenlm_filter = kenlm_filter
+        self.fasttext_weight = fasttext_weight
+        self.kenlm_weight = kenlm_weight
+        self.ensemble_threshold = ensemble_threshold
+
+        # Normalize weights
+        total_weight = 0.0
+        if fasttext_filter:
+            total_weight += fasttext_weight
+        if kenlm_filter:
+            total_weight += kenlm_weight
+
+        if total_weight > 0:
+            self.fasttext_weight = fasttext_weight / total_weight
+            self.kenlm_weight = kenlm_weight / total_weight
+        else:
+            raise ValueError("At least one filter (FastText or KenLM) must be provided")
+
+    def predict_score(self, text: str) -> float:
+        """
+        Compute ensemble quality score.
+
+        Args:
+            text: Document text
+
+        Returns:
+            Weighted average quality score in [0, 1]
+        """
+        score = 0.0
+
+        if self.fasttext_filter:
+            fasttext_score = self.fasttext_filter.predict_score(text)
+            score += self.fasttext_weight * fasttext_score
+
+        if self.kenlm_filter:
+            kenlm_score = self.kenlm_filter.predict_score(text)
+            score += self.kenlm_weight * kenlm_score
+
+        return score
+
+    def predict(self, text: str) -> bool:
+        """
+        Predict if document passes ensemble quality threshold.
+
+        Args:
+            text: Document text
+
+        Returns:
+            True if ensemble score >= threshold
+        """
+        score = self.predict_score(text)
+        return score >= self.ensemble_threshold
