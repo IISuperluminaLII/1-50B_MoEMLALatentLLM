@@ -294,6 +294,68 @@ class TestDolmaDatasetTokenization:
             # Only the valid text should be yielded
             assert len(results) == 1
 
+    def test_padding_masked_in_labels(self):
+        """
+        Regression test: Verify that padding positions are masked with -100 in labels.
+
+        This ensures the model doesn't learn to predict padding tokens, which would
+        inflate loss and bias evaluation metrics.
+
+        Reference: DeepSeek-V3 report on standard autoregressive training practices.
+        """
+        sources = [DolmaSource("test", "subset", 1.0, "Test")]
+
+        # Create mock tokenizer that returns padded sequences
+        tokenizer = Mock()
+        seq_len = 128
+
+        # Create input_ids and attention_mask with padding
+        # First 64 tokens are valid, remaining 64 are padding
+        padded_ids = torch.ones((1, seq_len), dtype=torch.long)
+        padded_ids[0, :64] = torch.arange(1, 65)  # Valid token IDs: 1-64
+        padded_ids[0, 64:] = 0  # Padding token ID: 0
+
+        attention_mask = torch.zeros((1, seq_len), dtype=torch.long)
+        attention_mask[0, :64] = 1  # First 64 tokens are valid
+
+        tokenizer.return_value = {
+            "input_ids": padded_ids,
+            "attention_mask": attention_mask
+        }
+
+        with patch('src.data.dolma_loader.DolmaDataset._load_datasets'):
+            dataset = DolmaDataset(sources=sources, tokenizer=tokenizer, seq_length=seq_len)
+
+            # Test tokenization function directly
+            examples = {"text": ["Test document with padding"]}
+            result = dataset._tokenize_function(examples)
+
+            # Verify labels structure
+            assert "labels" in result
+            labels = result["labels"]
+            input_ids = result["input_ids"]
+            attention_mask = result["attention_mask"]
+
+            # Assertion 1: Padded positions in labels must equal -100
+            padded_positions = attention_mask[0] == 0
+            assert torch.all(labels[0][padded_positions] == -100), \
+                "Padded positions in labels should be -100 (ignore_index)"
+
+            # Assertion 2: Valid (non-padded) positions in labels must match input_ids
+            valid_positions = attention_mask[0] == 1
+            assert torch.all(labels[0][valid_positions] == input_ids[0][valid_positions]), \
+                "Valid positions in labels should match input_ids"
+
+            # Assertion 3: Verify MTP labels already handle padding correctly
+            mtp_labels = result["mtp_labels"]
+            # MTP labels for padded positions should be -100
+            for i in range(seq_len):
+                if attention_mask[0, i] == 0:
+                    assert mtp_labels[0, i, 0] == -100, \
+                        f"MTP label[{i}, 0] should be -100 for padded position"
+                    assert mtp_labels[0, i, 1] == -100, \
+                        f"MTP label[{i}, 1] should be -100 for padded position"
+
 
 class TestCreateDolmaDataloaders:
     """Test create_dolma_dataloaders function."""

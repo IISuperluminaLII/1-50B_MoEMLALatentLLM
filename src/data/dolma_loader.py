@@ -169,6 +169,10 @@ class DolmaDataset(IterableDataset):
         # Create labels (shifted input_ids)
         labels = tokenized["input_ids"].clone()
 
+        # Mask padding positions with -100 (PyTorch's ignore_index)
+        # This ensures the model doesn't learn to predict padding tokens
+        labels[tokenized["attention_mask"] == 0] = -100
+
         # Create MTP labels if needed
         batch_size = tokenized["input_ids"].shape[0]
         mtp_labels = torch.full(
