@@ -184,7 +184,7 @@ else:
 **Problems Identified**:
 
 1. **Missing Papers** (referenced in code but not in pdf_citations):
-   - Li et al. (2025) "Data × LLM: From Principles to Practices" (arXiv:2505.18458)
+   - Zhou et al. (2025) "Data × LLM: From Principles to Practices" (arXiv:2505.18458)
    - Lozhkov et al. (2024) "FineWeb-Edu" (no arXiv ID)
    - Xie et al. (2023) "DoReMi" (arXiv:2403.06640 in paper_ids.txt but PDF not downloaded)
    - Nguyen et al. (2024) "DCLM" (arXiv:2409.09613 in paper_ids.txt but PDF not downloaded)
@@ -380,7 +380,7 @@ No migration needed. All existing code will continue to work as expected, with t
 
 All fixes reference the following papers:
 
-- Li et al. (2025). "Data × LLM: From Principles to Practices." arXiv:2505.18458
+- Zhou et al. (2025). "Data × LLM: From Principles to Practices." arXiv:2505.18458
 - Lee et al. (2022). "Deduplicating Training Data Makes Language Models Better." arXiv:2107.06499
 - Nguyen et al. (2024). "DCLM: DataComp for Language Models." arXiv:2409.09613
 - Gao et al. (2021). "The Pile: An 800GB Dataset." arXiv:2101.00027

@@ -9,7 +9,7 @@ Implements the complete SOTA data sanitization pipeline with multiple stages:
 5. Domain mixing
 
 References:
-    Li et al. (2025). "Data × LLM: From Principles to Practices."
+    Zhou et al. (2025). "Data × LLM: From Principles to Practices."
     arXiv:2505.18458
 """
 import json

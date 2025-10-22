@@ -499,7 +499,7 @@ class ExactDeduplicator:
    - arXiv:2107.06499
    - MinHash LSH methodology
 
-2. **Li et al. (2025)** - "Data × LLM: From Principles to Practices"
+2. **Zhou et al. (2025)** - "Data × LLM: From Principles to Practices"
    - arXiv:2505.18458
    - Complete sanitization pipeline
 

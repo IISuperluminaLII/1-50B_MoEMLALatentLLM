@@ -14,7 +14,7 @@ Implementation of a comprehensive data sanitization pipeline for LLM training da
 
 **Implementation**: [src/data/preliminary_cleaning.py](src/data/preliminary_cleaning.py)
 **Tests**: [tests/data/test_preliminary_cleaning.py](tests/data/test_preliminary_cleaning.py)
-**Reference**: Li et al. (2025), arXiv:2505.18458, Section 3.1.1
+**Reference**: Zhou et al. (2025), arXiv:2505.18458, Section 3.1.1
 
 #### Features Implemented:
 - ✓ Unicode normalization (NFKC/NFC/NFD/NFKD)
@@ -207,7 +207,7 @@ stats = pipeline.process_and_save(input_data=input_data)
 **Tests**: [tests/integration/test_dolma_integration.py](tests/integration/test_dolma_integration.py)
 **Status**: ✅ Basic implementation complete, advanced features pending
 **References**:
-- Li et al. (2025), arXiv:2505.18458 - Section 3.1.2
+- Zhou et al. (2025), arXiv:2505.18458 - Section 3.1.2
 - Nguyen et al. (2024), arXiv:2409.09613 - DCLM filters
 - Gao et al. (2021), arXiv:2101.00027 - The Pile filters
 
@@ -287,7 +287,7 @@ stats = pipeline.process_and_save(input_data=input_data)
 
 **Estimated Time**: 2-3 days
 **References**:
-- Li et al. (2025), arXiv:2505.18458 - SoftDeDup
+- Zhou et al. (2025), arXiv:2505.18458 - SoftDeDup
 - DeepSeek-AI (2024), arXiv:2412.19437 - Domain mixing ratios
 - Xie et al. (2024), arXiv:2403.06640 - DoReMi upsampling
 
@@ -429,7 +429,7 @@ python scripts/run_data_tests.py
    arXiv:2411.04257 | Memory optimization
 
 ### Text Cleaning & Filtering:
-4. **Li et al. (2025)** - "Data × LLM: From Principles to Practices"
+4. **Zhou et al. (2025)** - "Data × LLM: From Principles to Practices"
    arXiv:2505.18458 | Complete sanitization pipeline, SoftDeDup
 
 5. **Nguyen et al. (2024)** - "DCLM: DataComp for Language Models"

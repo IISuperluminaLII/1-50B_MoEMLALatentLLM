@@ -13,7 +13,7 @@ References:
     Soldaini et al. (2024). "Dolma: an Open Corpus of Three Trillion Tokens
     for Language Model Pretraining Research." arXiv:2402.00159
 
-    Li et al. (2025). "Data × LLM: From Principles to Practices."
+    Zhou et al. (2025). "Data × LLM: From Principles to Practices."
     arXiv:2505.18458
 """
 

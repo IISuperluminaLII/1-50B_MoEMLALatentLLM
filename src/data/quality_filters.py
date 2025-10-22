@@ -8,7 +8,7 @@ References:
     Joulin et al. (2016). "Bag of Tricks for Efficient Text Classification."
     arXiv:1607.01759
 
-    Li et al. (2025). "Data × LLM: From Principles to Practices."
+    Zhou et al. (2025). "Data × LLM: From Principles to Practices."
     arXiv:2505.18458
 """
 import warnings
