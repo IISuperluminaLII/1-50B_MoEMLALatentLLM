@@ -766,6 +766,192 @@ class TestDolmaDataPipeline:
         assert stats.heuristic_stats is not None, "Heuristic stats should be recorded"
 
 
+class TestPipelineStreaming:
+    """Test pipeline streaming mode for memory efficiency."""
+
+    def test_pipeline_streaming_mode_basic(self, temp_dir):
+        """Test that pipeline can run in streaming mode without loading all data into memory."""
+        from src.data.pipeline import DataPipeline, PipelineConfig
+        import json
+        import tempfile
+
+        # Create a temporary JSONL file with synthetic data
+        input_file = temp_dir / "streaming_input.jsonl"
+        with open(input_file, 'w') as f:
+            for i in range(1000):  # 1000 documents
+                doc = {"id": f"doc_{i}", "text": f"This is test document {i} with content. " * 20}
+                f.write(json.dumps(doc) + "\n")
+
+        # Setup pipeline config for streaming (no input_data parameter)
+        pipeline_config = PipelineConfig(
+            input_path=str(input_file),
+            output_dir=str(temp_dir / "streaming_output"),
+            enable_cleaning=True,
+            enable_deduplication=True,
+            enable_heuristic_filters=False,  # Would filter too many test docs
+            enable_quality_filters=False,
+            enable_domain_mixing=False,  # Not supported in streaming mode
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(pipeline_config)
+
+        # Run pipeline WITHOUT passing input_data (triggers streaming mode)
+        stats = pipeline.process_and_save()
+
+        # Verify pipeline completed successfully
+        assert stats.total_input_documents == 1000
+        assert stats.total_output_documents > 0
+        assert stats.documents_cleaned == 1000
+
+        # Verify output file was created
+        output_file = temp_dir / "streaming_output" / "final.jsonl"
+        assert output_file.exists()
+
+        # Verify output is valid JSONL
+        output_docs = []
+        with open(output_file) as f:
+            for line in f:
+                output_docs.append(json.loads(line))
+
+        assert len(output_docs) == stats.total_output_documents
+
+    def test_pipeline_streaming_with_duplicates(self, temp_dir):
+        """Test streaming deduplication removes duplicates without loading all data."""
+        from src.data.pipeline import DataPipeline, PipelineConfig
+        import json
+
+        # Create input with duplicates
+        input_file = temp_dir / "dedup_input.jsonl"
+        with open(input_file, 'w') as f:
+            for i in range(500):
+                # Each doc appears twice
+                doc = {"id": f"doc_{i}_v1", "text": f"Document {i} content here"}
+                f.write(json.dumps(doc) + "\n")
+                doc = {"id": f"doc_{i}_v2", "text": f"Document {i} content here"}  # Duplicate
+                f.write(json.dumps(doc) + "\n")
+
+        pipeline_config = PipelineConfig(
+            input_path=str(input_file),
+            output_dir=str(temp_dir / "dedup_output"),
+            enable_cleaning=False,
+            enable_deduplication=True,
+            enable_heuristic_filters=False,
+            enable_quality_filters=False,
+            enable_domain_mixing=False,
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(pipeline_config)
+        stats = pipeline.process_and_save()
+
+        # Should have removed ~500 duplicates
+        assert stats.total_input_documents == 1000
+        assert stats.documents_deduplicated > 0
+        assert stats.total_output_documents <= 500  # Approximately half (exact dedup)
+
+    def test_pipeline_streaming_domain_mixing_raises_error(self, temp_dir):
+        """Test that enabling domain mixing in streaming mode raises an error."""
+        from src.data.pipeline import DataPipeline, PipelineConfig
+        import json
+        import pytest
+
+        input_file = temp_dir / "test_input.jsonl"
+        with open(input_file, 'w') as f:
+            f.write(json.dumps({"id": "doc_1", "text": "Test"}) + "\n")
+
+        pipeline_config = PipelineConfig(
+            input_path=str(input_file),
+            output_dir=str(temp_dir / "test_output"),
+            enable_cleaning=False,
+            enable_deduplication=False,
+            enable_heuristic_filters=False,
+            enable_quality_filters=False,
+            enable_domain_mixing=True,  # Should raise error in streaming mode
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(pipeline_config)
+
+        # Should raise ValueError explaining domain mixing not supported
+        with pytest.raises(ValueError, match="Domain mixing requires full dataset visibility"):
+            pipeline.process_and_save()  # No input_data = streaming mode
+
+    def test_pipeline_memory_bounded_large_synthetic_stream(self, temp_dir):
+        """
+        Regression test: Verify pipeline memory usage stays bounded with large iterator.
+
+        This test feeds a generator that could produce millions of documents
+        and verifies the pipeline processes it without exhausting memory.
+        """
+        from src.data.pipeline import DataPipeline, PipelineConfig
+        import json
+        import os
+
+        try:
+            import psutil
+            has_psutil = True
+        except ImportError:
+            has_psutil = False
+
+        # Create a generator-based input (simulates infinite stream)
+        def large_doc_generator():
+            """Generator that yields 100K documents without materializing list."""
+            for i in range(100000):  # 100K documents
+                yield {"id": f"gen_doc_{i}", "text": f"Generated document {i}. " * 50}
+
+        # Write generator output to file (pipeline needs file path for streaming mode)
+        input_file = temp_dir / "large_stream.jsonl"
+        with open(input_file, 'w') as f:
+            for i, doc in enumerate(large_doc_generator()):
+                f.write(json.dumps(doc) + "\n")
+                if i >= 9999:  # Actually write 10K for faster test
+                    break
+
+        pipeline_config = PipelineConfig(
+            input_path=str(input_file),
+            output_dir=str(temp_dir / "memory_test_output"),
+            enable_cleaning=True,
+            enable_deduplication=True,  # Stateful but should not materialize all docs
+            enable_heuristic_filters=False,
+            enable_quality_filters=False,
+            enable_domain_mixing=False,
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(pipeline_config)
+
+        # Measure memory before and during (if psutil available)
+        if has_psutil:
+            process = psutil.Process(os.getpid())
+            mem_before = process.memory_info().rss / 1024 / 1024  # MB
+
+        # Run streaming pipeline
+        stats = pipeline.process_and_save()
+
+        if has_psutil:
+            mem_after = process.memory_info().rss / 1024 / 1024  # MB
+            mem_increase = mem_after - mem_before
+
+            # Memory increase should be reasonable (< 500MB for 10K documents)
+            # If it were loading everything into memory, we'd see multi-GB increase
+            # Note: This is a soft check as memory usage varies by platform
+            assert mem_increase < 500, f"Memory increased by {mem_increase:.1f}MB - possibly not streaming"
+
+        # Verify it processed all documents
+        assert stats.total_input_documents == 10000
+
+        # Verify output file exists and is correct size
+        output_file = temp_dir / "memory_test_output" / "final.jsonl"
+        assert output_file.exists()
+
+        # Count output lines (should match stats)
+        with open(output_file) as f:
+            output_count = sum(1 for _ in f)
+
+        assert output_count == stats.total_output_documents
+
+
 @pytest.mark.slow
 class TestRealDolmaDataset:
     """

@@ -256,20 +256,34 @@ class DataPipeline:
 
         Args:
             input_data: Optional list of documents (for testing). If provided (including
-                       empty list), uses in-memory data; if None, loads from disk.
+                       empty list), uses in-memory data; if None, streams from disk.
 
         Returns:
             Pipeline statistics
+
+        Note:
+            When input_data is None, the pipeline streams data to maintain O(batch_size)
+            memory usage regardless of corpus size. This enables processing multi-TB datasets
+            like Dolma without exhausting RAM.
         """
         start_time = time.time()
 
-        # Load data
+        # Branch: Test path (in-memory) vs Production path (streaming)
         # Use 'is not None' to allow empty lists for testing
         if input_data is not None:
-            documents = input_data
+            # IN-MEMORY PATH: For testing with small datasets
+            return self._process_and_save_inmemory(input_data, start_time)
         else:
-            documents = list(self._load_data())
+            # STREAMING PATH: For production with large datasets
+            return self._process_and_save_streaming(start_time)
 
+    def _process_and_save_inmemory(self, documents: List[Dict], start_time: float) -> PipelineStats:
+        """
+        Process data in-memory (for testing and small datasets).
+
+        This path maintains backward compatibility with existing tests that pass
+        in-memory lists and expect list-based behavior.
+        """
         self.stats.total_input_documents = len(documents)
 
         # Stage 1: Preliminary cleaning
@@ -400,3 +414,236 @@ class DataPipeline:
             print("="*80)
 
         return self.stats
+
+    def _process_and_save_streaming(self, start_time: float) -> PipelineStats:
+        """
+        Process data in streaming fashion (for production with large datasets).
+
+        This path streams through the pipeline, maintaining O(batch_size) memory usage.
+        Enables processing multi-TB corpora like Dolma without exhausting RAM.
+
+        Note:
+            Domain mixing is disabled in streaming mode as it requires knowing the
+            full dataset distribution. Use in-memory mode for domain mixing.
+        """
+        if self.config.enable_domain_mixing:
+            raise ValueError(
+                "Domain mixing requires full dataset visibility and is not supported in "
+                "streaming mode. Either:\n"
+                "  1. Disable domain mixing for large-scale streaming\n"
+                "  2. Use in-memory mode (pass input_data parameter) for small datasets\n"
+                "  3. Pre-process in batches and apply domain mixing separately"
+            )
+
+        # Initialize counters (we don't know total count upfront in streaming mode)
+        input_count = 0
+        cleaned_count = 0
+        dedup_input_count = 0
+        dedup_output_count = 0
+        heuristic_input_count = 0
+        heuristic_output_count = 0
+        quality_input_count = 0
+        quality_output_count = 0
+
+        # Open output file for streaming writes
+        output_path = self.output_dir / f"final.{self.config.output_format}"
+
+        if self.config.output_format != "jsonl":
+            # For non-JSONL formats, we need to buffer in memory (can't stream write)
+            # This is a limitation of Parquet/HF datasets that require full dataset
+            buffered_docs = []
+
+        # Setup intermediate output files
+        intermediate_files = {}
+        if self.config.save_intermediate:
+            if self.config.enable_cleaning:
+                intermediate_files['cleaned'] = open(
+                    self.intermediate_dir / "01_cleaned.jsonl", "w", encoding="utf-8"
+                )
+            if self.config.enable_deduplication:
+                intermediate_files['dedup'] = open(
+                    self.intermediate_dir / "02_deduplicated.jsonl", "w", encoding="utf-8"
+                )
+            if self.config.enable_heuristic_filters:
+                intermediate_files['heuristic'] = open(
+                    self.intermediate_dir / "03_heuristic_filtered.jsonl", "w", encoding="utf-8"
+                )
+            if self.config.enable_quality_filters:
+                intermediate_files['quality'] = open(
+                    self.intermediate_dir / "04_quality_filtered.jsonl", "w", encoding="utf-8"
+                )
+
+        try:
+            # Open final output for JSONL streaming writes
+            if self.config.output_format == "jsonl":
+                final_output = open(output_path, "w", encoding="utf-8")
+
+            # Create progress bar for input stream
+            doc_stream = self._load_data()
+            if self.config.show_progress:
+                print("\nProcessing stream (count unknown until complete)...")
+                doc_stream = tqdm(doc_stream, desc="Documents")
+
+            # Stream through pipeline stages
+            for doc in doc_stream:
+                input_count += 1
+
+                # Stage 1: Preliminary cleaning
+                if self.config.enable_cleaning and self.cleaner:
+                    doc = {"text": self.cleaner.clean(doc["text"]), "id": doc.get("id")}
+                    cleaned_count += 1
+
+                    if self.config.save_intermediate and 'cleaned' in intermediate_files:
+                        intermediate_files['cleaned'].write(
+                            json.dumps(doc, ensure_ascii=False) + "\n"
+                        )
+                else:
+                    cleaned_count += 1
+
+                # Stage 2: Deduplication (stateful - maintains hash index)
+                if self.config.enable_deduplication and self.deduplicator:
+                    dedup_input_count += 1
+
+                    # Check if this document is a duplicate
+                    text = doc["text"]
+                    doc_id = doc.get("id", f"doc_{input_count}")
+
+                    if self.has_datasketch_dedup():
+                        minhash = self.deduplicator.compute_minhash(text)
+                        result = self.deduplicator.lsh.query(minhash)
+
+                        if result:
+                            # Duplicate found, skip this document
+                            continue
+                        else:
+                            # Not a duplicate, add to index
+                            self.deduplicator.lsh.insert(doc_id, minhash)
+                    else:
+                        # Fallback: exact hash deduplication
+                        doc_hash = self.deduplicator.compute_minhash(text)
+                        if doc_hash in self.deduplicator.seen_hashes:
+                            # Duplicate found, skip
+                            continue
+                        else:
+                            self.deduplicator.seen_hashes.add(doc_hash)
+
+                    dedup_output_count += 1
+
+                    if self.config.save_intermediate and 'dedup' in intermediate_files:
+                        intermediate_files['dedup'].write(
+                            json.dumps(doc, ensure_ascii=False) + "\n"
+                        )
+
+                # Stage 3: Heuristic filtering
+                if self.config.enable_heuristic_filters and self.heuristic_filter:
+                    heuristic_input_count += 1
+
+                    if not self.heuristic_filter.filter(doc["text"]):
+                        # Document filtered out
+                        continue
+
+                    heuristic_output_count += 1
+
+                    if self.config.save_intermediate and 'heuristic' in intermediate_files:
+                        intermediate_files['heuristic'].write(
+                            json.dumps(doc, ensure_ascii=False) + "\n"
+                        )
+                else:
+                    heuristic_output_count += 1
+
+                # Stage 4: Quality filtering
+                if self.config.enable_quality_filters and self.quality_filter:
+                    quality_input_count += 1
+
+                    if not self.quality_filter.predict(doc["text"]):
+                        # Document filtered out
+                        continue
+
+                    quality_output_count += 1
+
+                    if self.config.save_intermediate and 'quality' in intermediate_files:
+                        intermediate_files['quality'].write(
+                            json.dumps(doc, ensure_ascii=False) + "\n"
+                        )
+                else:
+                    quality_output_count += 1
+
+                # Write to final output
+                if self.config.output_format == "jsonl":
+                    final_output.write(json.dumps(doc, ensure_ascii=False) + "\n")
+                else:
+                    buffered_docs.append(doc)
+
+            # Close all files
+            for f in intermediate_files.values():
+                f.close()
+
+            if self.config.output_format == "jsonl":
+                final_output.close()
+            else:
+                # Write buffered data for non-JSONL formats
+                if self.config.output_format == "parquet":
+                    import pandas as pd
+                    df = pd.DataFrame(buffered_docs)
+                    df.to_parquet(output_path, index=False)
+                elif self.config.output_format == "hf_dataset":
+                    from datasets import Dataset
+                    dataset = Dataset.from_list(buffered_docs)
+                    dataset.save_to_disk(str(output_path))
+                quality_output_count = len(buffered_docs)
+
+        finally:
+            # Ensure all files are closed even on error
+            for f in intermediate_files.values():
+                if not f.closed:
+                    f.close()
+            if self.config.output_format == "jsonl" and 'final_output' in locals() and not final_output.closed:
+                final_output.close()
+
+        # Update statistics
+        self.stats.total_input_documents = input_count
+        self.stats.documents_cleaned = cleaned_count
+
+        # Calculate filtered counts
+        if self.config.enable_deduplication:
+            self.stats.documents_deduplicated = dedup_input_count - dedup_output_count
+
+        if self.config.enable_heuristic_filters:
+            self.stats.documents_filtered_heuristic = heuristic_input_count - heuristic_output_count
+            self.stats.heuristic_stats = self.heuristic_filter.get_stats().__dict__
+
+        if self.config.enable_quality_filters:
+            self.stats.documents_filtered_quality = quality_input_count - quality_output_count
+
+        self.stats.total_output_documents = quality_output_count
+        self.stats.processing_time_seconds = time.time() - start_time
+
+        # Save statistics
+        stats_path = self.output_dir / "pipeline_stats.json"
+        with open(stats_path, "w") as f:
+            json.dump(asdict(self.stats), f, indent=2)
+
+        if self.config.show_progress:
+            print("\n" + "="*80)
+            print("Streaming Pipeline Statistics:")
+            print(f"  Input documents:  {self.stats.total_input_documents:,}")
+            print(f"  Output documents: {self.stats.total_output_documents:,}")
+            print(f"  Documents removed: {self.stats.total_input_documents - self.stats.total_output_documents:,}")
+            if self.config.enable_deduplication:
+                print(f"  Duplicates removed: {self.stats.documents_deduplicated:,}")
+            if self.config.enable_heuristic_filters:
+                print(f"  Heuristic filtered: {self.stats.documents_filtered_heuristic:,}")
+            if self.config.enable_quality_filters:
+                print(f"  Quality filtered: {self.stats.documents_filtered_quality:,}")
+            print(f"  Processing time: {self.stats.processing_time_seconds:.2f}s")
+            print("="*80)
+
+        return self.stats
+
+    def has_datasketch_dedup(self) -> bool:
+        """Check if deduplicator has datasketch library."""
+        return (
+            self.deduplicator is not None and
+            hasattr(self.deduplicator, 'has_datasketch') and
+            self.deduplicator.has_datasketch
+        )
