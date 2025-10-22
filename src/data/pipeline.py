@@ -214,6 +214,7 @@ class DataPipeline:
                 temperature=self.config.domain_config.get("temperature", 0.5),
                 num_iterations=self.config.domain_config.get("num_iterations", 1),
                 random_seed=self.config.domain_config.get("random_seed", 42),
+                loss_feedback_path=self.config.domain_config.get("doremi_loss_feedback_path"),
             )
         else:
             self.domain_mixer = None
@@ -463,10 +464,25 @@ class DataPipeline:
                 avg_tokens_per_doc = 500  # Conservative estimate
                 target_size = target_tokens // avg_tokens_per_doc
 
-            documents = self.domain_mixer.mix_documents(
-                documents,
-                target_size=target_size,
-            )
+            # Check if DoReMi mode with iterations
+            if (self.domain_mixer.composition_name == "doremi" and
+                self.domain_mixer.num_iterations > 1 and
+                self.domain_mixer.domain_losses is not None):
+                # Use DoReMi optimization loop with loaded loss feedback
+                documents = self.domain_mixer.mix_documents_with_feedback(
+                    documents,
+                    self.domain_mixer.domain_losses,
+                    num_iterations=self.domain_mixer.num_iterations,
+                    target_size=target_size,
+                    reference_losses=self.domain_mixer.reference_losses,
+                    reference_weights=self.domain_mixer.reference_weights,
+                )
+            else:
+                # Standard mixing without feedback loop
+                documents = self.domain_mixer.mix_documents(
+                    documents,
+                    target_size=target_size,
+                )
 
             # Collect domain statistics
             self.stats.domain_stats = self.domain_mixer.get_statistics()
@@ -606,12 +622,29 @@ class DataPipeline:
                             self.deduplicator.lsh.insert(doc_id, minhash)
                     else:
                         # Fallback: exact hash deduplication
-                        doc_hash = self.deduplicator.compute_minhash(text)
+                        # Check if this is an ExactDeduplicator (has compute_hash) or MinHashDeduplicator
+                        from .deduplication import ExactDeduplicator
+                        if isinstance(self.deduplicator, ExactDeduplicator):
+                            doc_hash = self.deduplicator.compute_hash(text)
+                        else:
+                            # MinHashDeduplicator without datasketch
+                            doc_hash = self.deduplicator.compute_minhash(text)
+
                         if doc_hash in self.deduplicator.seen_hashes:
                             # Duplicate found, skip
                             continue
                         else:
                             self.deduplicator.seen_hashes.add(doc_hash)
+
+                    # If using "both" method, also check exact deduplication
+                    if self.exact_deduplicator is not None:
+                        exact_hash = self.exact_deduplicator.compute_hash(text)
+                        if exact_hash in self.exact_deduplicator.seen_hashes:
+                            # Exact duplicate found, skip this document
+                            continue
+                        else:
+                            # Not an exact duplicate, add to seen hashes
+                            self.exact_deduplicator.seen_hashes.add(exact_hash)
 
                     dedup_output_count += 1
 
