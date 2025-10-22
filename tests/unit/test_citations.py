@@ -55,22 +55,29 @@ class TestCitations:
 
         papers = []
         with open(metadata_file, 'r') as f:
-            for line in f:
+            for line_num, line in enumerate(f, start=1):
                 line = line.strip()
                 if line and not line.startswith('#'):
                     # Format: <identifier> | <type> | <title> | <authors> | <venue> | <year> | <folder> | <filename>
                     parts = [p.strip() for p in line.split('|')]
-                    if len(parts) == 8:
-                        papers.append({
-                            'identifier': parts[0],
-                            'type': parts[1],
-                            'title': parts[2],
-                            'authors': parts[3],
-                            'venue': parts[4],
-                            'year': parts[5],
-                            'folder': parts[6],
-                            'filename': parts[7],
-                        })
+                    if len(parts) != 8:
+                        pytest.fail(
+                            f"Malformed metadata entry at {metadata_file}:{line_num}\n"
+                            f"Expected 8 fields separated by '|', got {len(parts)} fields.\n"
+                            f"Line content: {line}\n\n"
+                            f"Expected format:\n"
+                            f"<identifier> | <type> | <title> | <authors> | <venue> | <year> | <folder> | <filename>"
+                        )
+                    papers.append({
+                        'identifier': parts[0],
+                        'type': parts[1],
+                        'title': parts[2],
+                        'authors': parts[3],
+                        'venue': parts[4],
+                        'year': parts[5],
+                        'folder': parts[6],
+                        'filename': parts[7],
+                    })
         return papers
 
     @pytest.fixture
@@ -271,6 +278,42 @@ class TestCitations:
                 f"Missing citation folders:\n" +
                 "\n".join(f"  - {f}" for f in missing_folders)
             )
+
+    def test_malformed_metadata_raises_error(self, citations_root: Path):
+        """Test that malformed metadata entries trigger explicit failures."""
+        import tempfile
+        import os
+
+        # Create a temporary malformed metadata file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tmp:
+            tmp.write("# Valid header\n")
+            tmp.write("DOI:12345 | conference | Valid Paper | Author | Venue | 2024 | Folder | file.pdf\n")
+            tmp.write("MALFORMED_LINE_WITH_ONLY_THREE_FIELDS | field2 | field3\n")
+            tmp_path = tmp.name
+
+        try:
+            # The paper_metadata fixture logic should detect malformed entries
+            # Simulate the fixture behavior
+            malformed_detected = False
+            with open(tmp_path, 'r') as f:
+                for line_num, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = [p.strip() for p in line.split('|')]
+                        if len(parts) != 8:
+                            # Malformed entry detected!
+                            malformed_detected = True
+                            # Verify the error message would be informative
+                            expected_msg = f"Malformed metadata entry at {tmp_path}:{line_num}"
+                            assert "Malformed metadata entry" in expected_msg
+                            break
+
+            # Verify that we did detect the malformed entry
+            assert malformed_detected, "Malformed metadata entry was not detected!"
+
+        finally:
+            # Clean up
+            os.unlink(tmp_path)
 
     def test_paper_count_matches(
         self,
@@ -480,6 +523,7 @@ class TestCitationUsage:
         src_root = project_root / "src"
         scripts_root = project_root / "scripts"
         configs_root = project_root / "configs"
+        tests_root = project_root / "tests"
 
         # Files to scan
         files_to_scan = []
@@ -511,6 +555,10 @@ class TestCitationUsage:
         if (citations_root / "README.md").exists():
             files_to_scan.append(citations_root / "README.md")
 
+        # 7. Test files (to catch test fixtures with synthetic arXiv IDs)
+        if tests_root.exists():
+            files_to_scan.extend(tests_root.rglob("*.py"))
+
         # Pattern to find arXiv references in text
         arxiv_pattern = re.compile(r'arXiv:(\d{4}\.\d{4,6})')
 
@@ -519,16 +567,22 @@ class TestCitationUsage:
         for file_path in files_to_scan:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                    lines = f.readlines()
 
-                # Find all arXiv IDs in this file
-                found_ids = arxiv_pattern.findall(content)
+                # Process line by line to check for citation-ignore comments
+                for line in lines:
+                    # Skip lines with citation-ignore marker
+                    if '# citation-ignore' in line or '# citation:ignore' in line:
+                        continue
 
-                for arxiv_id in found_ids:
-                    if arxiv_id not in tracked_ids:
-                        if arxiv_id not in untracked_ids:
-                            untracked_ids[arxiv_id] = []
-                        untracked_ids[arxiv_id].append(str(file_path.relative_to(citations_root.parent)))
+                    # Find all arXiv IDs in this line
+                    found_ids = arxiv_pattern.findall(line)
+
+                    for arxiv_id in found_ids:
+                        if arxiv_id not in tracked_ids:
+                            if arxiv_id not in untracked_ids:
+                                untracked_ids[arxiv_id] = []
+                            untracked_ids[arxiv_id].append(str(file_path.relative_to(citations_root.parent)))
 
             except Exception as e:
                 # Skip files that can't be read

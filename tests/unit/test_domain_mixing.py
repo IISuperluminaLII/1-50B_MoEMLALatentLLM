@@ -39,7 +39,7 @@ class TestDomainIdentifier:
 
         academic_doc = {
             "text": "Abstract: This paper presents a novel approach to machine learning. "
-                   "arXiv:2103.12345. We prove a theorem showing convergence."
+                   "arXiv:2305.10429. We prove a theorem showing convergence."
         }
 
         domain, confidence = identifier.identify(academic_doc)
@@ -193,7 +193,7 @@ class TestDomainMixer:
             {"text": "def foo(): return 42", "id": "1"},
             {"text": "import sys", "id": "2"},
             {"text": "== Wikipedia Article ==\n[[Link]]", "id": "3"},
-            {"text": "Abstract: arXiv:1234.5678", "id": "4"},
+            {"text": "Abstract: arXiv:2412.19437", "id": "4"},
         ]
 
         buckets = mixer.classify_documents(documents)
