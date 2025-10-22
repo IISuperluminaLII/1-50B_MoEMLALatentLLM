@@ -140,11 +140,67 @@ class TestMinHashJaccardVerification:
         # doc_1 should always be kept (original)
         assert "doc_1" in unique_ids, "doc_1 (original) should be kept"
 
+    def test_streaming_detects_cross_batch_duplicates(self):
+        """
+        Test that streaming deduplication detects duplicates across batch boundaries.
+
+        Regression test for bug where deduplicate_streaming() would re-instantiate
+        stored_texts for each batch, causing cross-batch near-duplicates to survive
+        even though Lee et al. (2022) guarantees they should be removed.
+        """
+        pytest.importorskip("datasketch")
+
+        # Create deduplicator with small batch size to force multiple batches
+        dedup = MinHashDeduplicator(
+            num_perm=128,
+            threshold=0.8,
+            n_gram=13,
+            seed=42
+        )
+
+        # Create documents with controlled cross-batch duplicates
+        base_text = "The quick brown fox jumps over the lazy dog. " * 10
+
+        # Batch 1: doc_1, doc_2 (doc_2 is different)
+        # Batch 2: doc_3 (near-duplicate of doc_1 from previous batch)
+        documents = [
+            ("doc_1", base_text),  # Batch 1
+            ("doc_2", "Completely different text about machine learning and AI systems. " * 10),  # Batch 1
+            ("doc_3", base_text + "The quick brown fox jumps over the lazy dog. " * 2),  # Batch 2: near-duplicate of doc_1
+        ]
+
+        # Compute expected Jaccard similarity
+        jaccard_1_3 = dedup.compute_jaccard_similarity(documents[0][1], documents[2][1])
+
+        # Process in streaming mode with batch_size=2 (forces doc_3 into second batch)
+        unique_docs = list(dedup.deduplicate_streaming(iter(documents), batch_size=2))
+
+        # Extract IDs
+        unique_ids = [doc_id for doc_id, _ in unique_docs]
+
+        # Assertions:
+        # 1. doc_1 and doc_2 should be kept (different docs in batch 1)
+        assert "doc_1" in unique_ids, "Original doc_1 should be kept"
+        assert "doc_2" in unique_ids, "Different doc_2 should be kept"
+
+        # 2. doc_3 should be removed if Jaccard >= 0.8 (cross-batch duplicate detection)
+        if jaccard_1_3 >= 0.8:
+            assert "doc_3" not in unique_ids, \
+                f"doc_3 (Jaccard={jaccard_1_3:.3f} >= 0.8) should be removed even though it's in a different batch"
+            assert len(unique_docs) == 2, "Should keep exactly 2 documents (doc_1, doc_2)"
+        else:
+            # If Jaccard < 0.8, doc_3 should survive
+            assert "doc_3" in unique_ids, \
+                f"doc_3 (Jaccard={jaccard_1_3:.3f} < 0.8) should survive"
+            assert len(unique_docs) == 3, "Should keep all 3 documents"
+
     def test_pipeline_streaming_uses_jaccard_verification(self, temp_dir):
         """
         Test that streaming pipeline also uses Jaccard verification.
 
-        Ensures the fix applies to both batch and streaming modes.
+        Ensures the fix applies to both batch and streaming modes and that
+        high-similarity documents (not just exact duplicates) are filtered
+        when Jaccard >= threshold.
         """
         # Create input file with duplicates using longer text for reliable Jaccard
         input_file = temp_dir / "stream_input.jsonl"
@@ -160,6 +216,10 @@ class TestMinHashJaccardVerification:
         with open(input_file, 'w') as f:
             for doc in documents:
                 f.write(json.dumps(doc) + "\n")
+
+        # Compute exact Jaccard similarity between doc_1 and doc_3
+        dedup = MinHashDeduplicator(num_perm=128, threshold=0.8, n_gram=13, seed=42)
+        jaccard_1_3 = dedup.compute_jaccard_similarity(documents[0]["text"], documents[2]["text"])
 
         # Create pipeline config with MinHash deduplication
         config = PipelineConfig(
@@ -181,15 +241,48 @@ class TestMinHashJaccardVerification:
         pipeline = DataPipeline(config)
         stats = pipeline.process_and_save()
 
-        # Verify streaming mode used Jaccard verification
-        # At minimum, exact duplicate (doc_2) should be removed
-        assert stats.documents_deduplicated >= 1, \
-            f"Should remove at least exact duplicate, got {stats.documents_deduplicated}"
-        assert stats.total_output_documents <= 3, \
-            f"Should keep at most 3 documents, got {stats.total_output_documents}"
+        # Load output to verify which documents survived
+        output_file = Path(config.output_dir) / "final.jsonl"
+        assert output_file.exists(), "Output file should exist"
 
-        # Exact duplicate must be removed
-        assert stats.documents_deduplicated >= 1, "Exact duplicate must be detected and removed"
+        output_docs = []
+        with open(output_file, 'r') as f:
+            for line in f:
+                output_docs.append(json.loads(line))
+
+        output_ids = {doc["id"] for doc in output_docs}
+
+        # Assertions based on Jaccard similarity
+        if jaccard_1_3 >= 0.8:
+            # High-Jaccard case: both doc_2 (exact) and doc_3 (high-similarity) should be removed
+            assert "doc_2" not in output_ids, "Exact duplicate (doc_2) must be removed"
+            assert "doc_3" not in output_ids, \
+                f"High-similarity doc_3 (Jaccard={jaccard_1_3:.3f} >= 0.8) must be removed"
+
+            # Both doc_2 and doc_3 should be filtered
+            assert stats.documents_deduplicated >= 2, \
+                f"Should remove both exact duplicate and high-similarity document, got {stats.documents_deduplicated}"
+
+            # Only doc_1 and doc_4 should survive
+            assert stats.total_output_documents == 2, \
+                f"Should keep exactly 2 documents (doc_1, doc_4), got {stats.total_output_documents}"
+            assert output_ids == {"doc_1", "doc_4"}, \
+                f"Only doc_1 and doc_4 should survive, got {output_ids}"
+        else:
+            # Low-Jaccard case: only doc_2 (exact duplicate) should be removed, doc_3 survives
+            assert "doc_2" not in output_ids, "Exact duplicate (doc_2) must be removed"
+            assert "doc_3" in output_ids, \
+                f"doc_3 (Jaccard={jaccard_1_3:.3f} < 0.8) should survive"
+
+            assert stats.documents_deduplicated >= 1, "At least exact duplicate must be removed"
+            assert stats.total_output_documents == 3, \
+                f"Should keep 3 documents (doc_1, doc_3, doc_4), got {stats.total_output_documents}"
+            assert output_ids == {"doc_1", "doc_3", "doc_4"}, \
+                f"doc_1, doc_3, doc_4 should survive, got {output_ids}"
+
+        # doc_1 and doc_4 should always be kept
+        assert "doc_1" in output_ids, "Original doc_1 should always be kept"
+        assert "doc_4" in output_ids, "Different doc_4 should always be kept"
 
 
 class TestQualityFilterEnforcement:

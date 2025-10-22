@@ -67,6 +67,10 @@ class MinHashDeduplicator:
             # Use simple hash-based deduplication as fallback
             self.seen_hashes = set()
 
+        # Persistent storage for Jaccard verification across streaming batches
+        # Maps doc_id -> text for already-indexed documents
+        self._stored_texts = {}
+
         self.stats = None
 
     def generate_n_grams(self, text: str) -> List[str]:
@@ -190,9 +194,9 @@ class MinHashDeduplicator:
         duplicate_map = {} if return_duplicates else None
 
         if self.has_datasketch:
-            # Store document texts for Jaccard verification
-            # Maps doc_id -> text for already-indexed documents
-            stored_texts = {}
+            # Use persistent storage for Jaccard verification
+            # This ensures cross-batch duplicate detection works correctly
+            # in streaming mode (Lee et al. 2022 compliance)
 
             # Use LSH for efficient near-duplicate detection
             for i, (doc, doc_id) in enumerate(zip(documents, doc_ids)):
@@ -208,10 +212,10 @@ class MinHashDeduplicator:
                 is_duplicate = False
                 if candidates:
                     for candidate_id in candidates:
-                        if candidate_id in stored_texts:
+                        if candidate_id in self._stored_texts:
                             # Compute exact Jaccard similarity
                             jaccard_sim = self.compute_jaccard_similarity(
-                                doc, stored_texts[candidate_id]
+                                doc, self._stored_texts[candidate_id]
                             )
 
                             # Only mark as duplicate if similarity >= threshold
@@ -225,7 +229,7 @@ class MinHashDeduplicator:
                     # Not a duplicate (either no candidates or all below threshold)
                     # Add to index and store text for future verification
                     self.lsh.insert(doc_id, minhash)
-                    stored_texts[doc_id] = doc
+                    self._stored_texts[doc_id] = doc
                     unique_docs.append(doc)
                     unique_ids.append(doc_id)
         else:
@@ -304,6 +308,7 @@ class MinHashDeduplicator:
         if self.has_datasketch:
             from datasketch import MinHashLSH
             self.lsh = MinHashLSH(threshold=self.threshold, num_perm=self.num_perm)
+            self._stored_texts.clear()
         else:
             self.seen_hashes.clear()
         self.stats = None

@@ -317,17 +317,54 @@ class TestCitations:
 
     def test_paper_count_matches(
         self,
+        citations_root: Path,
         paper_ids: List[str],
         paper_metadata: List[Dict[str, str]],
-        all_pdfs: Set[Path]
+        all_pdfs: Set[Path],
+        arxiv_mapping: Dict[str, str]
     ):
-        """Test that the number of tracked papers matches the number of PDFs."""
-        total_tracked = len(paper_ids) + len(paper_metadata)
+        """
+        Test that the number of unique tracked PDFs matches the number of actual PDFs.
+
+        This test accounts for alias entries (e.g., FineWeb-Edu-2024) where multiple
+        identifiers can reference the same PDF file.
+        """
+        # Collect unique PDF filenames from all tracking sources
+        tracked_pdf_filenames = set()
+
+        # From paper_metadata.txt (exact filenames)
+        for paper in paper_metadata:
+            tracked_pdf_filenames.add(paper['filename'])
+
+        # From arXiv mapping (exact filenames)
+        for arxiv_id in paper_ids:
+            if arxiv_id in arxiv_mapping:
+                tracked_pdf_filenames.add(arxiv_mapping[arxiv_id])
+
+        # From arXiv IDs (partial matching for unmapped IDs)
+        # For unmapped arXiv IDs, find matching PDFs by ID substring
+        arxiv_ids_set = set(paper_ids)
+        for pdf in all_pdfs:
+            filename = pdf.name
+            # Check if any arXiv ID is in the filename (for unmapped IDs)
+            for arxiv_id in arxiv_ids_set:
+                if arxiv_id not in arxiv_mapping and arxiv_id in filename:
+                    tracked_pdf_filenames.add(filename)
+                    break
+
+        total_unique_tracked = len(tracked_pdf_filenames)
         total_pdfs = len(all_pdfs)
 
-        assert total_tracked == total_pdfs, \
-            f"Mismatch: {total_tracked} tracked papers but {total_pdfs} PDFs found. " \
+        assert total_unique_tracked == total_pdfs, \
+            f"Mismatch: {total_unique_tracked} unique tracked PDFs but {total_pdfs} actual PDFs found. " \
             f"Run test_no_orphan_pdfs and test_arxiv_pdfs_exist for details."
+
+        # Regression assertion: verify that alias entries are allowed
+        # (i.e., len(paper_ids) + len(paper_metadata) >= total_unique_tracked)
+        total_identifiers = len(paper_ids) + len(paper_metadata)
+        assert total_identifiers >= total_unique_tracked, \
+            f"Total identifiers ({total_identifiers}) should be >= unique PDFs ({total_unique_tracked}) " \
+            f"to allow alias entries like FineWeb-Edu-2024"
 
 
 class TestCitationUsage:
