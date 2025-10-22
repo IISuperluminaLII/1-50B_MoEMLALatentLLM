@@ -128,10 +128,17 @@ def load_config(config_path: str) -> DeepSeekV3Config:
 
 def setup_distributed(args):
     """Setup distributed training environment."""
+    # Initialize defaults to ensure variables are always defined
+    rank = 0
+    world_size = 1
+    local_rank = 0
+
     if args.deepspeed:
         # DeepSpeed handles initialization
         import deepspeed
         deepspeed.init_distributed()
+        # Get local_rank from environment or args
+        local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank if args.local_rank != -1 else 0))
     else:
         # Manual distributed setup
         if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
@@ -147,6 +154,7 @@ def setup_distributed(args):
             world_size = 1
             local_rank = args.local_rank if args.local_rank != -1 else 0
 
+    # Update from distributed state if initialized
     rank = dist.get_rank() if dist.is_initialized() else rank
     world_size = dist.get_world_size() if dist.is_initialized() else world_size
 

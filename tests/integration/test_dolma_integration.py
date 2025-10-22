@@ -1025,7 +1025,14 @@ class TestDoReMiPipelineIntegration:
 
     def test_doremi_pipeline_with_loss_feedback(self, temp_dir):
         """Test end-to-end DoReMi pipeline with synthetic loss feedback."""
+        import random
+        import numpy as np
+        import json
         from src.data.pipeline import DataPipeline, PipelineConfig
+
+        # Seed RNG for deterministic results
+        random.seed(42)
+        np.random.seed(42)
 
         # Create input documents with clear domain markers
         input_data = [
@@ -1056,23 +1063,16 @@ class TestDoReMiPipelineIntegration:
                 "num_iterations": 3,
                 "temperature": 0.5,
                 "target_size": 150,
+                "random_seed": 42,
             },
             show_progress=False,
         )
 
-        # Note: For full DoReMi, we'd need a loss feedback mechanism
-        # This test verifies the DoReMi mixer is initialized correctly
+        # Create pipeline and verify DoReMi mixer is initialized
         pipeline = DataPipeline(pipeline_config)
-
-        # Verify DoReMi mixer is created
         assert pipeline.domain_mixer is not None
         assert pipeline.domain_mixer.composition_name == "doremi"
         assert pipeline.domain_mixer.dro_optimizer is not None
-
-        # Test direct DoReMi optimization with synthetic losses
-        from src.data.domain_mixing import DomainMixer
-
-        mixer = DomainMixer(composition="doremi", random_seed=42)
 
         # Synthetic losses: code has HIGH loss (hard), web has LOW loss (easy)
         # DoReMi upweights high-loss (hard) domains
@@ -1086,36 +1086,51 @@ class TestDoReMiPipelineIntegration:
             "social": 3.0,
         }
 
-        # Apply DoReMi with feedback
-        mixed_docs = mixer.mix_documents_with_feedback(
-            input_data,
-            domain_losses=domain_losses,
-            num_iterations=3,
-            target_size=150,
-        )
+        # Apply DoReMi optimization before running pipeline
+        for _ in range(3):
+            pipeline.domain_mixer.optimize_weights_doremi(domain_losses)
 
-        # Verify output
-        assert len(mixed_docs) == 150
+        # Now run the pipeline which will use the optimized weights
+        stats = pipeline.process_and_save(input_data=input_data)
 
-        # Verify weights were optimized
-        stats = mixer.get_statistics()
-        assert stats["iteration"] == 3
+        # Verify pipeline completed successfully
+        assert stats.total_input_documents == 150
+        assert stats.total_output_documents == 150
+
+        # Load pipeline stats from file
+        stats_file = temp_dir / "doremi_output" / "pipeline_stats.json"
+        assert stats_file.exists(), "pipeline_stats.json should be saved"
+
+        with open(stats_file, 'r') as f:
+            pipeline_stats = json.load(f)
+
+        assert pipeline_stats["total_output_documents"] == 150
+
+        # Load domain mixing stats
+        domain_stats_file = temp_dir / "doremi_output" / "intermediate" / "domain_mixing_stats.json"
+        assert domain_stats_file.exists(), "domain_mixing_stats.json should be saved"
+
+        with open(domain_stats_file, 'r') as f:
+            domain_stats = json.load(f)
+
+        # Verify DoReMi optimization occurred
+        assert domain_stats["iteration"] == 3
 
         # Code (high loss) should have higher weight than initial uniform
-        assert stats["target_weights"]["code"] > 1.0 / 7, \
-            f"Expected code weight > {1.0/7:.3f}, got {stats['target_weights']['code']:.3f}"
+        assert domain_stats["target_weights"]["code"] > 1.0 / 7, \
+            f"Expected code weight > {1.0/7:.3f}, got {domain_stats['target_weights']['code']:.3f}"
 
         # Common crawl (low loss) should have lower weight than code (high loss)
-        assert stats["target_weights"]["code"] > stats["target_weights"]["common_crawl"], \
+        assert domain_stats["target_weights"]["code"] > domain_stats["target_weights"]["common_crawl"], \
             "Hard domain (code) should have more weight than easy domain (common_crawl)"
 
         # Verify actual distribution matches sampled output
-        assert "input_distribution" in stats
-        assert "actual_distribution" in stats
-        assert "sampled_document_counts" in stats
+        assert "input_distribution" in domain_stats
+        assert "actual_distribution" in domain_stats
+        assert "sampled_document_counts" in domain_stats
 
         # Sampled counts should sum to target size
-        total_sampled = sum(stats["sampled_document_counts"].values())
+        total_sampled = sum(domain_stats["sampled_document_counts"].values())
         assert total_sampled == 150
 
     def test_doremi_weight_convergence(self):

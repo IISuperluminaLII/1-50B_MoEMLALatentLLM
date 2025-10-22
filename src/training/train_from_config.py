@@ -22,14 +22,22 @@ from src.data.dolma_loader import create_dolma_dataloaders
 
 def setup_distributed(args):
     """Setup distributed training environment."""
+    # Initialize defaults to ensure variables are always defined
+    rank = 0
+    world_size = 1
+    local_rank = 0
+
     if args.deepspeed:
         # DeepSpeed handles initialization
         try:
             import deepspeed
             deepspeed.init_distributed()
+            # Get local_rank from environment or args
+            local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank if args.local_rank != -1 else 0))
         except ImportError:
             print("Warning: DeepSpeed not installed, falling back to torch.distributed")
             dist.init_process_group(backend="nccl")
+            local_rank = int(os.environ.get("LOCAL_RANK", args.local_rank if args.local_rank != -1 else 0))
     else:
         # Manual distributed setup
         if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
@@ -45,8 +53,9 @@ def setup_distributed(args):
             world_size = 1
             local_rank = args.local_rank if args.local_rank != -1 else 0
 
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    # Update from distributed state if initialized
+    rank = dist.get_rank() if dist.is_initialized() else rank
+    world_size = dist.get_world_size() if dist.is_initialized() else world_size
 
     return rank, world_size, local_rank
 

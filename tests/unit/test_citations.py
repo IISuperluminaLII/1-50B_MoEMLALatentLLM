@@ -483,6 +483,117 @@ class TestCitationUsage:
                 f"RoPE paper with author '{author_keyword}' and title '{title_keyword}' not found " \
                 f"(referenced in tests/unit/test_rope.py)"
 
+    def test_fineweb_edu_citation_exists(self, citations_root: Path):
+        """Test that FineWeb-Edu citation exists (referenced in all DeepSeek configs)."""
+        # Check metadata file for FineWeb-Edu entry
+        metadata_file = citations_root / "paper_metadata.txt"
+        assert metadata_file.exists(), "paper_metadata.txt missing"
+
+        fineweb_found = False
+        with open(metadata_file, 'r') as f:
+            for line in f:
+                if line.startswith('#') or not line.strip():
+                    continue
+                if 'FineWeb-Edu' in line and 'Lozhkov' in line:
+                    fineweb_found = True
+                    break
+
+        assert fineweb_found, \
+            "FineWeb-Edu citation not found in paper_metadata.txt (referenced in all DeepSeek configs at line 162)"
+
+        # Check PDF exists
+        quality_folder = citations_root / "05_Quality_Filtering"
+        fineweb_pdfs = list(quality_folder.glob("*FineWeb-Edu*.pdf"))
+
+        # Note: PDF may not exist yet (need to download), so we only warn
+        if not fineweb_pdfs:
+            import warnings
+            warnings.warn(
+                "FineWeb-Edu PDF not found in 05_Quality_Filtering/. "
+                "Metadata entry exists, but PDF needs to be downloaded."
+            )
+
+    def test_config_citations_have_pdfs(self, citations_root: Path):
+        """
+        Scan config files for citation strings and verify PDFs exist.
+
+        This test catches non-arXiv citations (like FineWeb-Edu, CCNet, etc.)
+        that are referenced in configs but missing from the PDF library.
+        """
+        import json
+        import re
+
+        project_root = citations_root.parent
+        configs_root = project_root / "configs"
+
+        if not configs_root.exists():
+            pytest.skip("configs/ directory not found")
+
+        # Known citation patterns in configs (non-arXiv)
+        # Format: citation_string -> (expected_author, expected_folder)
+        known_citations = {
+            "FineWeb-Edu": ("Lozhkov", "05_Quality_Filtering"),
+            "CCNet": ("Wenzek", "05_Quality_Filtering"),
+            "RefinedWeb": ("Penedo", "05_Quality_Filtering"),
+            "Gopher": ("Rae", "07_Data_Practices"),
+        }
+
+        # Load metadata for non-arXiv papers
+        metadata_file = citations_root / "paper_metadata.txt"
+        tracked_citations = set()
+
+        if metadata_file.exists():
+            with open(metadata_file, 'r') as f:
+                for line in f:
+                    if not line.startswith('#') and line.strip():
+                        # Extract title and author from metadata
+                        parts = [p.strip() for p in line.split('|')]
+                        if len(parts) >= 8:
+                            tracked_citations.add(parts[2])  # title
+                            tracked_citations.add(parts[3])  # authors
+
+        # Scan config files
+        config_files = list(configs_root.rglob("*.json"))
+
+        missing_citations = []
+        for config_file in config_files:
+            try:
+                with open(config_file, 'r') as f:
+                    content = f.read()
+
+                    # Check for known citation patterns
+                    for citation_key, (author, folder) in known_citations.items():
+                        if citation_key in content:
+                            # Check if PDF exists
+                            citation_folder = citations_root / folder
+                            if citation_folder.exists():
+                                pdfs = list(citation_folder.glob(f"*{author}*.pdf"))
+                                if not pdfs:
+                                    # Also check title-based search
+                                    pdfs = list(citation_folder.glob(f"*{citation_key}*.pdf"))
+
+                                if not pdfs:
+                                    missing_citations.append({
+                                        'citation': citation_key,
+                                        'config': str(config_file.relative_to(project_root)),
+                                        'expected_author': author,
+                                        'expected_folder': folder,
+                                    })
+            except Exception:
+                # Skip files that can't be read
+                continue
+
+        if missing_citations:
+            error_msg = "Citations referenced in configs but PDFs not found:\n\n"
+            for item in missing_citations:
+                error_msg += f"  {item['citation']} (by {item['expected_author']})\n"
+                error_msg += f"    Referenced in: {item['config']}\n"
+                error_msg += f"    Expected folder: {item['expected_folder']}\n\n"
+
+            error_msg += "Action: Download PDFs and add to appropriate folders, OR update paper_metadata.txt if metadata entry exists but PDF is missing\n"
+
+            pytest.fail(error_msg)
+
     def test_documentation_arxiv_ids_are_valid(self, citations_root: Path):
         """
         Scan documentation files for arXiv IDs and verify they exist in citation tracking.

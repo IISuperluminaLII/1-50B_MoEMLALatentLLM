@@ -108,7 +108,7 @@ class DataPipeline:
         else:
             self.cleaner = None
 
-        # Initialize deduplicator
+        # Initialize deduplicator(s)
         if self.config.enable_deduplication:
             from .deduplication import MinHashDeduplicator, ExactDeduplicator
             dedup_method = self.config.dedup_config.get("method", "minhash")
@@ -120,18 +120,25 @@ class DataPipeline:
                     n_gram=self.config.dedup_config.get("n_gram", 13),
                     seed=self.config.dedup_config.get("seed", 42),
                 )
+                self.exact_deduplicator = None
             elif dedup_method == "exact":
                 self.deduplicator = ExactDeduplicator()
-            else:
-                # Both methods
+                self.exact_deduplicator = None
+            elif dedup_method == "both":
+                # Run both MinHash (near-duplicate) and Exact (exact duplicate) deduplication
+                # MinHash runs first, then Exact runs on the survivors
                 self.deduplicator = MinHashDeduplicator(
                     num_perm=self.config.dedup_config.get("num_perm", 128),
                     threshold=self.config.dedup_config.get("threshold", 0.8),
                     n_gram=self.config.dedup_config.get("n_gram", 13),
                     seed=self.config.dedup_config.get("seed", 42),
                 )
+                self.exact_deduplicator = ExactDeduplicator()
+            else:
+                raise ValueError(f"Unknown deduplication method: {dedup_method}. Use 'minhash', 'exact', or 'both'")
         else:
             self.deduplicator = None
+            self.exact_deduplicator = None
 
         # Initialize heuristic filters
         if self.config.enable_heuristic_filters:
@@ -365,6 +372,7 @@ class DataPipeline:
             texts = [doc["text"] for doc in documents]
             doc_ids = [doc.get("id", f"doc_{i}") for i, doc in enumerate(documents)]
 
+            # Run MinHash deduplication first (if using "minhash" or "both")
             unique_texts, unique_ids, _ = self.deduplicator.deduplicate(
                 texts, doc_ids, return_duplicates=True
             )
@@ -375,7 +383,31 @@ class DataPipeline:
                 for text, doc_id in zip(unique_texts, unique_ids)
             ]
 
-            # Calculate deduplicated count using pre-dedup count (not documents_cleaned)
+            minhash_removed = pre_dedup_count - len(documents)
+
+            # If using "both" method, run exact deduplication on survivors
+            if self.exact_deduplicator is not None:
+                if self.config.show_progress:
+                    print(f"  MinHash removed {minhash_removed} near-duplicates")
+                    print("  Running exact deduplication on survivors...")
+
+                pre_exact_count = len(documents)
+                texts = [doc["text"] for doc in documents]
+                doc_ids = [doc.get("id", f"doc_{i}") for i, doc in enumerate(documents)]
+
+                unique_texts, unique_ids = self.exact_deduplicator.deduplicate(texts, doc_ids)
+
+                documents = [
+                    {"text": text, "id": doc_id}
+                    for text, doc_id in zip(unique_texts, unique_ids)
+                ]
+
+                exact_removed = pre_exact_count - len(documents)
+
+                if self.config.show_progress:
+                    print(f"  Exact dedup removed {exact_removed} additional exact duplicates")
+
+            # Calculate total deduplicated count
             self.stats.documents_deduplicated = pre_dedup_count - len(documents)
 
             if self.config.save_intermediate:
@@ -421,7 +453,16 @@ class DataPipeline:
                 print("\nStage 5/5: Domain Mixing")
 
             # Apply domain mixing to balance dataset composition
+            # Support both target_size (document count) and target_tokens (token count)
             target_size = self.config.domain_config.get("target_size")
+            target_tokens = self.config.domain_config.get("target_tokens")
+
+            # If target_tokens is specified but target_size is not, convert to approximate doc count
+            # Rough approximation: 1 token ≈ 4 characters, average doc ≈ 500 tokens
+            if target_size is None and target_tokens is not None:
+                avg_tokens_per_doc = 500  # Conservative estimate
+                target_size = target_tokens // avg_tokens_per_doc
+
             documents = self.domain_mixer.mix_documents(
                 documents,
                 target_size=target_size,
