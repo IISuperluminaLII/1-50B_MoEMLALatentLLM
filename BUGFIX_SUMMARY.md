@@ -187,7 +187,7 @@ else:
    - Zhou et al. (2025) "Data × LLM: From Principles to Practices" (arXiv:2505.18458)
    - Lozhkov et al. (2024) "FineWeb-Edu" (no arXiv ID)
    - Xie et al. (2023) "DoReMi" (arXiv:2305.10429)
-   - Nguyen et al. (2024) "DCLM" (arXiv:2409.09613 in paper_ids.txt but PDF not downloaded)
+   - Note: arXiv:2409.09613 is KenLM (Kim et al. 2024), not DCLM. DCLM/DataComp-LM is arXiv:2406.11794 (Li et al. 2024)
 
 2. **Unrelated Paper**:
    - Wang et al. "Passive iFIR Filters for Data-Driven Control" in `06_Domain_Mixing/`
@@ -382,7 +382,8 @@ All fixes reference the following papers:
 
 - Zhou et al. (2025). "Data × LLM: From Principles to Practices." arXiv:2505.18458
 - Lee et al. (2022). "Deduplicating Training Data Makes Language Models Better." arXiv:2107.06499
-- Nguyen et al. (2024). "DCLM: DataComp for Language Models." arXiv:2409.09613
+- Kim et al. (2024). "Rethinking KenLM: Good and Bad Model Ensembles for Efficient Text Quality Filtering." arXiv:2409.09613
+- Li et al. (2024). "DataComp-LM: In search of the next generation of training sets for language models." arXiv:2406.11794
 - Gao et al. (2021). "The Pile: An 800GB Dataset." arXiv:2101.00027
 
 ---

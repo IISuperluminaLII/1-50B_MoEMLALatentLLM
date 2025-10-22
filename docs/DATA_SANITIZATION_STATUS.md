@@ -208,7 +208,7 @@ stats = pipeline.process_and_save(input_data=input_data)
 **Status**: ✅ Basic implementation complete, advanced features pending
 **References**:
 - Zhou et al. (2025), arXiv:2505.18458 - Section 3.1.2
-- Nguyen et al. (2024), arXiv:2409.09613 - DCLM filters
+- Kim et al. (2024), arXiv:2409.09613 - KenLM-based quality filtering
 - Gao et al. (2021), arXiv:2101.00027 - The Pile filters
 
 #### Features Implemented:

@@ -8,7 +8,8 @@ References:
     Zhou et al. (2025). "Data × LLM: From Principles to Practices."
     arXiv:2505.18458, Section 3.1.2
 
-    Nguyen et al. (2024). "DCLM: DataComp for Language Models."
+    Kim et al. (2024). "Rethinking KenLM: Good and Bad Model Ensembles
+    for Efficient Text Quality Filtering."
     arXiv:2409.09613
 
     Gao et al. (2021). "The Pile: An 800GB Dataset of Diverse Text."

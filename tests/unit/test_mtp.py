@@ -4,7 +4,7 @@ Tests for Multi-Token Prediction (MTP).
 Based on SOTA practices from:
 - Gloeckle et al. (2024). "Better & Faster Large Language Models via Multi-token Prediction" (arXiv:2404.19737)
 - DeepSeek-V3 Technical Report (2024) (arXiv:2412.19437)
-- Li et al. (2025). "On multi-token prediction for efficient LLM inference" (arXiv:2502.09419)
+- Mehra et al. (2025). "On multi-token prediction for efficient LLM inference" (arXiv:2502.09419)
 - FastMTP (2025) (arXiv:2509.18362)
 
 Key test areas:

@@ -388,7 +388,7 @@ heuristic_filters:
 ## Support
 
 All preprocessing follows SOTA methods from research papers (2022-2025):
-- Li et al. (2025) - Preliminary cleaning
+- Zhou et al. (2025) - Data × LLM survey and preliminary cleaning
 - Lee et al. (2022) - MinHash deduplication
 - DeepSeek-V3 (2024) - Domain composition
 - Gopher, C4, RefinedWeb, FineWeb - Heuristic filters
