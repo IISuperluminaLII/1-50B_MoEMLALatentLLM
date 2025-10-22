@@ -251,9 +251,9 @@ stats = pipeline.process_and_save(input_data=input_data)
 
 **Estimated Time**: 3-4 days
 **References**:
-- Xu et al. (2024), arXiv:2510.00866 - FastText quality classifier
-- Nguyen et al. (2024), arXiv:2409.09613 - KenLM perplexity
-- Marion et al. (2024), arXiv:2406.11794 - Perplexity-benchmark correlation
+- Thiziri Nait Saada et al. (2024), arXiv:2510.00866 - Data-Quality Illusion
+- Yungi Kim et al. (2024), arXiv:2409.09613 - Rethinking KenLM
+- Jeffrey Li et al. (2024), arXiv:2406.11794 - DataComp-LM
 - Penedo et al. (2024), arXiv:2406.17557 - FineWeb quality indicators
 
 #### Planned Features:
@@ -289,7 +289,7 @@ stats = pipeline.process_and_save(input_data=input_data)
 **References**:
 - Zhou et al. (2025), arXiv:2505.18458 - SoftDeDup
 - DeepSeek-AI (2024), arXiv:2412.19437 - Domain mixing ratios
-- Xie et al. (2024), arXiv:2403.06640 - DoReMi upsampling
+- Xie et al. (2023), arXiv:2305.10429 - DoReMi upsampling
 
 #### Planned Features:
 - Domain identification:
@@ -322,8 +322,8 @@ stats = pipeline.process_and_save(input_data=input_data)
 
 **Estimated Time**: 2-3 days
 **References**:
-- Zhao et al. (2025), arXiv:2501.01046 - FED GPU acceleration (107× speedup)
-- Agarwal & Henderson (2024), arXiv:2411.04257 - LSHBloom memory efficiency
+- Youngjun Son et al. (2025), arXiv:2501.01046 - FED GPU acceleration (107× speedup)
+- Arham Khan et al. (2024), arXiv:2411.04257 - LSHBloom memory efficiency
 
 #### Planned Features:
 - Parallel processing:
@@ -422,25 +422,25 @@ python scripts/run_data_tests.py
 1. **Lee et al. (2022)** - "Deduplicating Training Data Makes Language Models Better"
    arXiv:2107.06499 | Primary deduplication methodology
 
-2. **Zhao et al. (2025)** - "FED: Towards Efficient Data Deduplication with GPUs"
+2. **Youngjun Son et al. (2025)** - "FED: Towards Efficient Data Deduplication with GPUs"
    arXiv:2501.01046 | GPU acceleration (107× speedup)
 
-3. **Agarwal & Henderson (2024)** - "LSHBloom: Memory-efficient MinHash"
+3. **Arham Khan et al. (2024)** - "LSHBloom: Memory-efficient MinHash"
    arXiv:2411.04257 | Memory optimization
 
 ### Text Cleaning & Filtering:
 4. **Zhou et al. (2025)** - "Data × LLM: From Principles to Practices"
    arXiv:2505.18458 | Complete sanitization pipeline, SoftDeDup
 
-5. **Nguyen et al. (2024)** - "DCLM: DataComp for Language Models"
+5. **Yungi Kim et al. (2024)** - "Rethinking KenLM: Good and Bad Model Ensembles"
    arXiv:2409.09613 | Heuristic filters, KenLM perplexity
 
 ### Quality Filtering:
-6. **Xu et al. (2024)** - "Quality Filtering for Language Model Pretraining"
-   arXiv:2510.00866 | FastText quality classifier
+6. **Thiziri Nait Saada et al. (2024)** - "The Data-Quality Illusion"
+   arXiv:2510.00866 | Data quality filtering
 
-7. **Marion et al. (2024)** - "Perplexity Correlates with Downstream Performance"
-   arXiv:2406.11794 | Perplexity-benchmark correlation
+7. **Jeffrey Li et al. (2024)** - "DataComp-LM: In search of the next generation of training sets"
+   arXiv:2406.11794 | Quality-benchmark correlation
 
 8. **Penedo et al. (2024)** - "FineWeb: High-quality Web Data at Scale"
    arXiv:2406.17557 | Quality indicators
@@ -449,8 +449,8 @@ python scripts/run_data_tests.py
 9. **DeepSeek-AI (2024)** - "DeepSeek-V3 Technical Report"
    arXiv:2412.19437 | 14.8T token corpus, domain ratios
 
-10. **Xie et al. (2024)** - "DoReMi: Domain Reweighting with Minimax"
-    arXiv:2403.06640 | Optimal domain mixing
+10. **Xie et al. (2023)** - "DoReMi: Domain Reweighting with Minimax"
+    arXiv:2305.10429 | Optimal domain mixing
 
 ### Additional References:
 11. **Gao et al. (2021)** - "The Pile: An 800GB Dataset"

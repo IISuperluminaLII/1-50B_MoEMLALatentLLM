@@ -177,7 +177,7 @@ class MTPHead(nn.Module):
 
                 # Get predictions and targets
                 pred_logits = logits[:, :seq_len-depth-1, depth, :]  # [batch, valid_len, vocab_size]
-                target_tokens = mtp_labels[:, depth+1:, depth]  # [batch, valid_len]
+                target_tokens = mtp_labels[:, :seq_len-depth-1, depth]  # [batch, valid_len]
 
                 # Compute cross entropy
                 depth_loss = nn.functional.cross_entropy(

@@ -435,10 +435,10 @@ All implementations follow specifications from peer-reviewed papers:
 7. **Penedo et al. (2024)** - "The FineWeb Datasets" (arXiv:2406.17557)
    - Repetition detection methods
 
-8. **Xu et al. (2024)** - "Training Large Language Models to Reason in a Continuous Latent Space" (arXiv:2510.00866)
-   - FastText quality classification
+8. **Thiziri Nait Saada et al. (2024)** - "The Data-Quality Illusion" (arXiv:2510.00866)
+   - Data quality filtering
 
-9. **Nguyen et al. (2024)** - "FineWeb-Edu: Scaling Up Text Quality Filtering" (arXiv:2409.09613)
+9. **Yungi Kim et al. (2024)** - "Rethinking KenLM: Good and Bad Model Ensembles for Efficient Text Quality Filtering" (arXiv:2409.09613)
    - KenLM perplexity filtering
 
 ## Next Steps

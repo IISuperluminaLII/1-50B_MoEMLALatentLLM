@@ -40,9 +40,8 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 - ✅ Penedo et al. (2024) - "The RefinedWeb Dataset for Falcon LLM" (arXiv:2306.01116)
 - ✅ Penedo et al. (2024) - "The FineWeb Datasets: Decanting the Web for the Finest Text Data at Scale" (arXiv:2406.17557)
 - ✅ Li et al. (2024) - "DataComp-LM: In search of the next generation of training sets for language models" (arXiv:2406.11794)
-- ✅ Zhou et al. (2024) - "A Survey of LLM × DATA" (arXiv:2510.00866)
-- ✅ Saada et al. (2024) - "The Data-Quality Illusion: Rethinking Classifier-Based Quality Filtering for LLM Pretraining"
-- ✅ Kim et al. (2024) - "Rethinking KenLM: Good and Bad Model Ensembles for Efficient Text Quality Filtering"
+- ✅ Thiziri Nait Saada et al. (2024) - "The Data-Quality Illusion" (arXiv:2510.00866)
+- ✅ Yungi Kim et al. (2024) - "Rethinking KenLM: Good and Bad Model Ensembles for Efficient Text Quality Filtering" (arXiv:2409.09613)
 
 ### Citation Status Summary
 
@@ -71,7 +70,7 @@ All arXiv IDs are listed in [paper_ids.txt](paper_ids.txt).
 
 - **FineWeb-Edu**: Confirmed to be part of the main FineWeb paper (arXiv:2406.17557), not a separate citation
 - **DCLM vs KenLM**: The KenLM filtering paper (arXiv:2409.09613) is present and addresses similar concerns as DCLM
-- **Removed**: Control systems paper (arXiv:2403.06640) - unrelated to LLM data mixing (see `paper_metadata.txt` for audit trail)
+- **DoReMi**: The correct arXiv ID is 2305.10429 (published 2023). Previously incorrectly referenced as 2403.06640 in some documents.
 
 ## How to Update Citations
 
