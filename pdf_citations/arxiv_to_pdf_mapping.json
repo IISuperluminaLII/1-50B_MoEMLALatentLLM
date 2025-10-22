@@ -17,5 +17,11 @@
   "2101.00027": "Leo Gao et al. - The Pile_ An 800GB Dataset of Diverse Text for Language Modeling.pdf",
   "1910.10683": "Colin Raffel et al. - Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer.pdf",
   "2001.08361": "Jared Kaplan et al. - Scaling Laws for Neural Language Models.pdf",
-  "1607.01759": "Armand Joulin et al. - Bag of Tricks for Efficient Text Classification.pdf"
+  "1607.01759": "Armand Joulin et al. - Bag of Tricks for Efficient Text Classification.pdf",
+  "1911.00359": "Guillaume Wenzek et al. - CCNet_ Extracting High Quality Monolingual Datasets from Web Crawl Data.pdf",
+  "2104.09864": "Jianlin Su et al. - RoFormer_ Enhanced Transformer with Rotary Position Embedding.pdf",
+  "2404.19737": "Fabian Gloeckle et al. - Better & Faster Large Language Models via Multi-token Prediction.pdf",
+  "2410.06205": "Federico Barbero et al. - Round and Round We Go! What makes Rotary Positional Encodings useful_.pdf",
+  "2502.09419": "Somesh Mehra et al. - On multi-token prediction for efficient LLM inference.pdf",
+  "2509.18362": "Yuxuan Cai et al. - FastMTP_ Accelerating LLM Inference with Enhanced Multi-Token Prediction.pdf"
 }
