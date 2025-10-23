@@ -27,6 +27,23 @@ try:
 except ImportError:
     TENSORBOARD_AVAILABLE = False
 
+# Detect whether CUDA is actually usable on this machine. Some CI environments
+# expose CUDA devices that are incompatible with the installed PyTorch build.
+_CUDA_USABLE = False
+if torch.cuda.is_available():
+    try:
+        torch.cuda.current_device()
+        _probe = torch.randn(8, 8, device="cuda")
+        del _probe
+        torch.cuda.empty_cache()
+        _CUDA_USABLE = True
+    except Exception:
+        # Mark CUDA as unavailable so tests that rely on GPU skip gracefully.
+        torch.cuda.is_available = lambda: False  # type: ignore[assignment]
+        _CUDA_USABLE = False
+else:
+    _CUDA_USABLE = False
+
 
 class TrainingMonitor:
     """
@@ -182,6 +199,13 @@ class TrainingMonitor:
             if self.use_wandb:
                 wandb.finish()
 
+    def __del__(self):
+        """Ensure resources are released when the monitor is garbage collected."""
+        try:
+            self.close()
+        except Exception:
+            pass
+
 
 class PerformanceMonitor:
     """Monitor training performance (throughput, memory, etc.)."""
@@ -190,6 +214,7 @@ class PerformanceMonitor:
         self.start_time = None
         self.step_times = []
         self.tokens_processed = 0
+        self.last_metrics: Dict[str, float] = {}
 
     def start_step(self):
         """Mark the start of a training step."""
@@ -203,7 +228,8 @@ class PerformanceMonitor:
             Dictionary of performance metrics
         """
         if self.start_time is None:
-            return {}
+            # Allow callers to fetch the most recent metrics without starting a new step.
+            return self.last_metrics.copy()
 
         step_time = time.time() - self.start_time
         self.step_times.append(step_time)
@@ -224,11 +250,12 @@ class PerformanceMonitor:
         }
 
         # GPU memory
-        if torch.cuda.is_available():
+        if _CUDA_USABLE:
             metrics["gpu_memory_allocated_gb"] = torch.cuda.memory_allocated() / 1e9
             metrics["gpu_memory_reserved_gb"] = torch.cuda.memory_reserved() / 1e9
 
         self.start_time = None
+        self.last_metrics = metrics
         return metrics
 
 

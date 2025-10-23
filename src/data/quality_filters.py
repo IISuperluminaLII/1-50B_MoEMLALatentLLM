@@ -8,8 +8,11 @@ References:
     Joulin et al. (2016). "Bag of Tricks for Efficient Text Classification."
     arXiv:1607.01759
 
-    Kim et al. (2024). "DataComp-LM: In Search of the Next Generation of
+    Li et al. (2024). "DataComp-LM: In Search of the Next Generation of
     Training Sets for Language Models." arXiv:2406.11794
+
+    Kim et al. (2024). "Rethinking KenLM: Good and Bad Model Ensembles for
+    Efficient Text Quality Filtering in Large Web Corpora." arXiv:2409.09613
 
     Zhou et al. (2025). "A Survey of LLM × DATA."
     arXiv:2505.18458
@@ -277,8 +280,9 @@ class KenLMQualityFilter:
     distribution (typically high-quality, coherent text).
 
     References:
-        Kim et al. (2024). DataComp-LM, Section on perplexity filtering
-        Wenzek et al. (2019). CCNet, arXiv:1911.00359
+        Kim et al. (2024). "Rethinking KenLM." arXiv:2409.09613
+        Li et al. (2024). "DataComp-LM." arXiv:2406.11794
+        Wenzek et al. (2019). "CCNet." arXiv:1911.00359
     """
 
     def __init__(
@@ -300,8 +304,8 @@ class KenLMQualityFilter:
             ValueError: If model_path is None and allow_fallback is False.
 
         References:
-            Kim et al. (2024). "DataComp-LM: In Search of the Next Generation of
-            Training Sets for Language Models."
+            Kim et al. (2024). "Rethinking KenLM." arXiv:2409.09613
+            Li et al. (2024). "DataComp-LM." arXiv:2406.11794
             Wenzek et al. (2019). "CCNet." arXiv:1911.00359
         """
         self.model_path = model_path

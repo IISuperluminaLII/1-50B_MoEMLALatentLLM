@@ -163,11 +163,13 @@ Any arXiv ID found in these files must exist in `paper_ids.txt` or `paper_metada
 The following modules reference papers that should be in this directory:
 
 - `src/data/pipeline.py` - References Zhou et al. (2025) arXiv:2505.18458
-- `src/data/deduplication.py` - References Lee et al. (2022), FED, LSHBloom
+- `src/data/deduplication.py` - References Lee et al. (2022) arXiv:2107.06499
+- `src/data/deduplication_fed.py` - References Son et al. (2025) arXiv:2501.01046 (GPU-accelerated FED)
+- `src/data/deduplication_lshbloom.py` - References Khan et al. (2024) arXiv:2411.04257 (Memory-efficient LSHBloom)
 - `src/data/quality_filters.py` - References FastText, KenLM papers
 - `src/data/heuristic_filters.py` - References Zhou et al., DCLM, The Pile
 - `docs/DATA_SANITIZATION_STATUS.md` - Lists all major references
 
 ---
 
-*Last Updated: 2025-10-21*
+*Last Updated: 2025-10-22*

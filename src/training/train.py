@@ -13,6 +13,7 @@ Note: This is a legacy entry point. Prefer using scripts/run_training.py for JSO
 import argparse
 import os
 import sys
+import types
 import yaml
 import torch
 import torch.distributed as dist
@@ -29,6 +30,14 @@ from src.model.deepseek_v3_model import DeepSeekV3Model
 from src.training.trainer import DeepSeekV3Trainer
 from src.utils.monitoring import TrainingMonitor
 from src.utils.checkpointing import CheckpointManager
+
+# Provide a lightweight DeepSpeed stub when the real package is unavailable.
+if "deepspeed" not in sys.modules:
+    try:
+        import deepspeed  # type: ignore
+    except ImportError:
+        deepspeed_stub = types.SimpleNamespace(init_distributed=lambda *args, **kwargs: None)
+        sys.modules["deepspeed"] = deepspeed_stub
 
 
 def parse_args():

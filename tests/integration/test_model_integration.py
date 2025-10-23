@@ -393,9 +393,48 @@ class TestDistributedComponents:
     @pytest.mark.slow
     def test_data_parallel_forward(self, device):
         """Test data parallel forward pass."""
-        if not torch.cuda.is_available() or torch.cuda.device_count() < 2:
+        if not torch.cuda.is_available():
             pytest.skip("Requires multiple GPUs")
 
-        # This would test actual DDP setup
-        # Skipped in unit tests as it requires multi-GPU setup
-        pytest.skip("Full DDP test requires multi-GPU setup")
+        available_gpus = torch.cuda.device_count()
+        if available_gpus < 2:
+            pytest.skip("Requires multiple GPUs")
+
+        config = get_small_test_config()
+        batch_size, seq_len = 4, 32
+
+        class SmallParallelModel(torch.nn.Module):
+            def __init__(self, cfg):
+                super().__init__()
+                self.mla = MultiHeadLatentAttention(
+                    d_model=cfg.mla.d_model,
+                    d_latent=cfg.mla.d_latent,
+                    num_heads=cfg.mla.num_heads,
+                    use_flash_mla=False,
+                )
+                self.proj = torch.nn.Linear(cfg.mla.d_model, cfg.mla.d_model)
+                self.norm = torch.nn.LayerNorm(cfg.mla.d_model)
+
+            def forward(self, hidden_states):
+                mla_out = self.mla(hidden_states)
+                projected = self.proj(mla_out.hidden_states)
+                return self.norm(projected)
+
+        model = SmallParallelModel(config).cuda()
+        model.train()
+
+        device_ids = list(range(min(available_gpus, 2)))
+        parallel_model = torch.nn.DataParallel(model, device_ids=device_ids)
+
+        hidden_states = torch.randn(batch_size, seq_len, config.mla.d_model, device="cuda", requires_grad=True)
+
+        output = parallel_model(hidden_states)
+
+        assert output.shape == (batch_size, seq_len, config.mla.d_model)
+
+        loss = output.mean()
+        loss.backward()
+
+        # Ensure gradients propagated back to the base module
+        grad_checks = [param.grad is not None for param in model.parameters() if param.requires_grad]
+        assert all(grad_checks), "Expected gradients on all trainable parameters"

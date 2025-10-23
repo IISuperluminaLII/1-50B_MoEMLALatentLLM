@@ -1,8 +1,12 @@
 """
 Deduplication utilities for data sanitization.
 
-Implements both MinHash LSH for near-duplicate detection and exact
-deduplication using hash-based methods.
+Implements CPU MinHash, GPU-accelerated FED, and memory-efficient LSHBloom
+deduplication in addition to exact hash matching.
+
+Requirements:
+    - MinHashDeduplicator requires datasketch>=1.6.0 for Lee et al. (2022) compliance
+    - ExactDeduplicator has no external dependencies
 
 References:
     Lee et al. (2022). "Deduplicating Training Data Makes Language Models Better."
@@ -10,6 +14,12 @@ References:
 
     Broder (1997). "On the resemblance and containment of documents."
     Proceedings of the Compression and Complexity of Sequences.
+
+    Son et al. (2025). "FED: Fast and Efficient Dataset Deduplication Framework
+    with GPU Acceleration." arXiv:2501.01046
+
+    Khan et al. (2024). "LSHBloom: Memory-efficient, Extreme-scale Document
+    Deduplication." arXiv:2411.04257
 """
 import hashlib
 import time
@@ -33,6 +43,13 @@ class MinHashDeduplicator:
 
     Uses MinHash with Locality-Sensitive Hashing to efficiently
     find near-duplicate documents based on Jaccard similarity.
+
+    Requires:
+        datasketch>=1.6.0 for Lee et al. (2022) compliant two-phase
+        MinHash LSH + Jaccard verification algorithm.
+
+    References:
+        Lee et al. (2022). "Deduplicating Training Data Makes Language Models Better."
     """
 
     def __init__(
@@ -50,22 +67,29 @@ class MinHashDeduplicator:
             threshold: Jaccard similarity threshold for duplicates
             n_gram: Size of character n-grams
             seed: Random seed for hash functions
+
+        Raises:
+            ImportError: If datasketch library is not installed
         """
         self.num_perm = num_perm
         self.threshold = threshold
         self.n_gram = n_gram
         self.seed = seed
 
-        # Initialize MinHash if datasketch is available
+        # Require datasketch for Lee et al. (2022) compliance
         try:
             from datasketch import MinHash, MinHashLSH
-            self.has_datasketch = True
-            self.lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
-        except ImportError:
-            self.has_datasketch = False
-            self.lsh = None
-            # Use simple hash-based deduplication as fallback
-            self.seen_hashes = set()
+        except ImportError as e:
+            raise ImportError(
+                "MinHashDeduplicator requires 'datasketch' library for Lee et al. (2022) compliance.\n"
+                "Install with: pip install datasketch>=1.6.0\n\n"
+                "The hash-based fallback does NOT implement the cited two-phase "
+                "MinHash LSH + Jaccard verification algorithm and would violate paper compliance.\n\n"
+                "Reference: Lee et al. (2022) 'Deduplicating Training Data Makes Language Models Better' "
+                "(arXiv:2107.06499)"
+            ) from e
+
+        self.lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
 
         # Persistent storage for Jaccard verification across streaming batches
         # Maps doc_id -> text for already-indexed documents
@@ -99,20 +123,14 @@ class MinHashDeduplicator:
             text: Input text
 
         Returns:
-            MinHash object or hash string
+            MinHash object
         """
-        if self.has_datasketch:
-            from datasketch import MinHash
+        from datasketch import MinHash
 
-            minhash = MinHash(num_perm=self.num_perm, seed=self.seed)
-            for gram in self.generate_n_grams(text):
-                minhash.update(gram.encode("utf-8"))
-            return minhash
-        else:
-            # Fallback to simple hash
-            n_grams = self.generate_n_grams(text)
-            combined = "".join(sorted(n_grams))
-            return hashlib.sha256(combined.encode()).hexdigest()
+        minhash = MinHash(num_perm=self.num_perm, seed=self.seed)
+        for gram in self.generate_n_grams(text):
+            minhash.update(gram.encode("utf-8"))
+        return minhash
 
     def compute_jaccard_similarity(self, text1: str, text2: str) -> float:
         """
@@ -149,11 +167,7 @@ class MinHashDeduplicator:
         Returns:
             Estimated Jaccard similarity
         """
-        if self.has_datasketch:
-            return minhash1.jaccard(minhash2)
-        else:
-            # For fallback, just check exact match
-            return 1.0 if minhash1 == minhash2 else 0.0
+        return minhash1.jaccard(minhash2)
 
     def deduplicate(
         self,
@@ -193,59 +207,44 @@ class MinHashDeduplicator:
         unique_ids = []
         duplicate_map = {} if return_duplicates else None
 
-        if self.has_datasketch:
-            # Use persistent storage for Jaccard verification
-            # This ensures cross-batch duplicate detection works correctly
-            # in streaming mode (Lee et al. 2022 compliance)
+        # Use persistent storage for Jaccard verification
+        # This ensures cross-batch duplicate detection works correctly
+        # in streaming mode (Lee et al. 2022 compliance)
 
-            # Use LSH for efficient near-duplicate detection
-            for i, (doc, doc_id) in enumerate(zip(documents, doc_ids)):
-                if not doc:
-                    continue
+        # Use LSH for efficient near-duplicate detection
+        for i, (doc, doc_id) in enumerate(zip(documents, doc_ids)):
+            if not doc:
+                continue
 
-                minhash = self.compute_minhash(doc)
+            minhash = self.compute_minhash(doc)
 
-                # Phase 1: Query LSH for candidate duplicates (approximate)
-                candidates = self.lsh.query(minhash)
+            # Phase 1: Query LSH for candidate duplicates (approximate)
+            candidates = self.lsh.query(minhash)
 
-                # Phase 2: Verify candidates with exact Jaccard similarity
-                is_duplicate = False
-                if candidates:
-                    for candidate_id in candidates:
-                        if candidate_id in self._stored_texts:
-                            # Compute exact Jaccard similarity
-                            jaccard_sim = self.compute_jaccard_similarity(
-                                doc, self._stored_texts[candidate_id]
-                            )
+            # Phase 2: Verify candidates with exact Jaccard similarity
+            is_duplicate = False
+            if candidates:
+                for candidate_id in candidates:
+                    if candidate_id in self._stored_texts:
+                        # Compute exact Jaccard similarity
+                        jaccard_sim = self.compute_jaccard_similarity(
+                            doc, self._stored_texts[candidate_id]
+                        )
 
-                            # Only mark as duplicate if similarity >= threshold
-                            if jaccard_sim >= self.threshold:
-                                is_duplicate = True
-                                if return_duplicates:
-                                    duplicate_map[doc_id] = candidate_id
-                                break
+                        # Only mark as duplicate if similarity >= threshold
+                        if jaccard_sim >= self.threshold:
+                            is_duplicate = True
+                            if return_duplicates:
+                                duplicate_map[doc_id] = candidate_id
+                            break
 
-                if not is_duplicate:
-                    # Not a duplicate (either no candidates or all below threshold)
-                    # Add to index and store text for future verification
-                    self.lsh.insert(doc_id, minhash)
-                    self._stored_texts[doc_id] = doc
-                    unique_docs.append(doc)
-                    unique_ids.append(doc_id)
-        else:
-            # Fallback to simple hash-based deduplication
-            for doc, doc_id in zip(documents, doc_ids):
-                if not doc:
-                    continue
-
-                doc_hash = self.compute_minhash(doc)
-
-                if doc_hash not in self.seen_hashes:
-                    self.seen_hashes.add(doc_hash)
-                    unique_docs.append(doc)
-                    unique_ids.append(doc_id)
-                elif return_duplicates:
-                    duplicate_map[doc_id] = "duplicate"
+            if not is_duplicate:
+                # Not a duplicate (either no candidates or all below threshold)
+                # Add to index and store text for future verification
+                self.lsh.insert(doc_id, minhash)
+                self._stored_texts[doc_id] = doc
+                unique_docs.append(doc)
+                unique_ids.append(doc_id)
 
         # Update statistics
         self.stats = DeduplicationStats(
@@ -305,12 +304,9 @@ class MinHashDeduplicator:
 
     def clear(self):
         """Clear internal state and statistics."""
-        if self.has_datasketch:
-            from datasketch import MinHashLSH
-            self.lsh = MinHashLSH(threshold=self.threshold, num_perm=self.num_perm)
-            self._stored_texts.clear()
-        else:
-            self.seen_hashes.clear()
+        from datasketch import MinHashLSH
+        self.lsh = MinHashLSH(threshold=self.threshold, num_perm=self.num_perm)
+        self._stored_texts.clear()
         self.stats = None
 
 
@@ -396,3 +392,70 @@ class ExactDeduplicator:
         """Clear internal state and statistics."""
         self.seen_hashes.clear()
         self.stats = None
+
+
+def create_deduplicator(method: str, **kwargs):
+    """
+    Factory function to create appropriate deduplicator.
+
+    Args:
+        method: Deduplication method - "minhash", "exact", "fed", or "lshbloom"
+        **kwargs: Method-specific configuration parameters
+
+    Returns:
+        Deduplicator instance
+
+    Raises:
+        ValueError: If method is unknown
+        ImportError: If required dependencies for method are not installed
+
+    Examples:
+        # CPU MinHash (requires datasketch)
+        dedup = create_deduplicator("minhash", threshold=0.8, num_perm=128)
+
+        # GPU-accelerated FED (requires torch, cupy, faiss-gpu)
+        dedup = create_deduplicator("fed", similarity_threshold=0.8)
+
+        # Memory-efficient LSHBloom (requires pybloom-live)
+        dedup = create_deduplicator("lshbloom", similarity_threshold=0.8)
+
+        # Exact hash matching (no dependencies)
+        dedup = create_deduplicator("exact")
+    """
+    if method == "minhash":
+        return MinHashDeduplicator(**kwargs)
+
+    elif method == "exact":
+        return ExactDeduplicator(**kwargs)
+
+    elif method == "fed":
+        from .deduplication_fed import FEDDeduplicator, FEDConfig
+        # Extract FED-specific parameters
+        fed_config = FEDConfig(
+            num_hash_functions=kwargs.get("num_perm", 128),
+            n_gram_size=kwargs.get("n_gram", 13),
+            similarity_threshold=kwargs.get("threshold", 0.8),
+            batch_size=kwargs.get("batch_size", 10000),
+            device=kwargs.get("device", "cuda:0"),
+        )
+        return FEDDeduplicator(config=fed_config)
+
+    elif method == "lshbloom":
+        from .deduplication_lshbloom import LSHBloomDeduplicator, LSHBloomConfig
+        # Extract LSHBloom-specific parameters
+        lshbloom_config = LSHBloomConfig(
+            num_bands=kwargs.get("num_bands", 20),
+            rows_per_band=kwargs.get("rows_per_band", 6),
+            bloom_capacity=kwargs.get("bloom_capacity", 100000),
+            bloom_error_rate=kwargs.get("bloom_error_rate", 0.001),
+            n_gram_size=kwargs.get("n_gram", 13),
+            similarity_threshold=kwargs.get("threshold", 0.8),
+            seed=kwargs.get("seed", 42),
+        )
+        return LSHBloomDeduplicator(config=lshbloom_config)
+
+    else:
+        raise ValueError(
+            f"Unknown deduplication method: '{method}'. "
+            f"Available methods: 'minhash', 'exact', 'fed', 'lshbloom'"
+        )

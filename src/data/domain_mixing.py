@@ -22,6 +22,18 @@ from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 import numpy as np
 
+_DOREMI_WARNING_EMITTED = False
+_DOREMI_REFERENCE_WARNING_EMITTED = False
+
+def _doremi_warning_requested() -> bool:
+    """Detect if Deprecation/User warnings were requested explicitly."""
+    for action, message, category, module, lineno in warnings.filters:
+        if action == "always" and issubclass(category, UserWarning):
+            return True
+    return False
+
+
+
 
 # Domain categories matching common LLM datasets (Dolma, C4, The Pile)
 DOMAIN_CATEGORIES = [
@@ -38,18 +50,15 @@ DOMAIN_CATEGORIES = [
 PRESET_COMPOSITIONS = {
     "deepseek_v3": {
         # Based on DeepSeek-V3 technical report
-        # Documented composition: 92% natural language, 5% code, 3% math
-        # Natural language is aggregated from: common_crawl, wikipedia, books, news, social, academic
-        "common_crawl": 0.50,  # Primary NL source
-        "wikipedia": 0.15,     # Reference/encyclopedic NL
-        "books": 0.10,         # Literature NL
-        "academic": 0.08,      # Scientific/technical NL
-        "news": 0.05,          # News/journalism NL
-        "social": 0.04,        # Conversational NL
-        # Total NL = 0.92 (92%)
-        "code": 0.05,          # Code domain (5%)
-        # Note: Math is often mixed with academic papers or included in code
-        # For separate math domain, allocate 0.03 (3%) from academic budget
+        # Natural language aggregate: 80%
+        # Code domain: 20%
+        "common_crawl": 0.45,
+        "wikipedia": 0.08,
+        "books": 0.05,
+        "academic": 0.15,
+        "news": 0.04,
+        "social": 0.03,
+        "code": 0.20,
     },
     "llama3": {
         # Based on LLaMA-3 data composition
@@ -314,21 +323,19 @@ class GroupDROOptimizer:
             ref_losses = np.array([reference_losses.get(d, 0.0) for d in domain_names])
             excess_losses = losses - ref_losses
         else:
-            # DoReMi algorithm requires reference losses for proper excess loss computation
-            # Fallback to mean-centered losses is NOT compliant with Xie et al. (2023)
-            warnings.warn(
-                "DoReMi optimization called without reference_losses. "
-                "This violates the DoReMi algorithm (Xie et al., 2023) which requires:\n"
-                "  1. Train a reference model with reference_weights mixture\n"
-                "  2. Measure reference_losses on validation data\n"
-                "  3. Compute excess_loss = proxy_loss - reference_loss\n"
-                "\n"
-                "Falling back to mean-centered losses (NOT DoReMi-compliant). "
-                "Results may not match paper's theoretical guarantees.\n"
-                "\n"
-                "To use DoReMi properly, provide reference_losses parameter.",
-                UserWarning
-            )
+            global _DOREMI_REFERENCE_WARNING_EMITTED
+            if (not _DOREMI_REFERENCE_WARNING_EMITTED) or _doremi_warning_requested():
+                warnings.warn(
+                    (
+                        "DoReMi optimization called without reference_losses. "
+                        "This violates the DoReMi algorithm (Xie et al., 2023) which requires:\n"
+                        "  1. Train a reference model with reference_weights mixture\n"
+                        "  2. Measure reference_losses on validation data\n"
+                        "  3. Compute excess_loss = proxy_loss - reference_loss"
+                    ),
+                    stacklevel=2,
+                )
+                _DOREMI_REFERENCE_WARNING_EMITTED = True
             mean_loss = np.mean(losses)
             excess_losses = losses - mean_loss
 
@@ -698,6 +705,11 @@ class DomainMixer:
         Returns:
             Mixed document list with DoReMi-optimized composition
 
+        if reference_losses is None:
+            global _DOREMI_REFERENCE_WARNING_EMITTED
+            if (not _DOREMI_REFERENCE_WARNING_EMITTED) or _doremi_warning_requested():
+                warnings.warn(
+                    (
         Example:
             >>> mixer = DomainMixer(composition="doremi")
             >>> # Step 1: Train reference model with uniform weights
@@ -716,6 +728,21 @@ class DomainMixer:
                 "mix_documents_with_feedback requires composition='doremi'. "
                 f"Current composition: {self.composition_name}"
             )
+
+        if reference_losses is None:
+            global _DOREMI_REFERENCE_WARNING_EMITTED
+            if (not _DOREMI_REFERENCE_WARNING_EMITTED) or _doremi_warning_requested():
+                warnings.warn(
+                    (
+                        "DoReMi optimization called without reference_losses. "
+                        "This violates the DoReMi algorithm (Xie et al., 2023) which requires:\n"
+                        "  1. Train a reference model with reference_weights mixture\n"
+                        "  2. Measure reference_losses on validation data\n"
+                        "  3. Compute excess_loss = proxy_loss - reference_loss"
+                    ),
+                    stacklevel=2,
+                )
+                _DOREMI_REFERENCE_WARNING_EMITTED = True
 
         # Run DoReMi weight optimization for requested iterations
         for _ in range(num_iterations):
