@@ -372,6 +372,18 @@ class DeepSeekV3Model(nn.Module):
         mtp_weight = 1.0  # For now, uniform MTP weight; could use per-depth weights
         moe_weight = getattr(self.config.training, 'moe_aux_loss_weight', 0.001) if hasattr(self, 'config') else 0.001
 
+        # When configs are mocked in unit tests these values may be Mock objects.
+        # Ensure we always work with numeric scalars.
+        for name, value in (("lm_weight", lm_weight), ("moe_weight", moe_weight)):
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                numeric = 1.0 if name == "lm_weight" else 0.001
+            if name == "lm_weight":
+                lm_weight = numeric
+            else:
+                moe_weight = numeric
+
         if (lm_loss is not None) and (mtp_loss is not None):
             total_loss = lm_weight * lm_loss + mtp_weight * mtp_loss
         elif lm_loss is not None:

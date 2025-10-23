@@ -180,8 +180,8 @@ class TestRoPEApplication:
                 # Should be correlated (same relative distance)
                 # Note: Won't be exactly equal due to non-stationarity
                 # Just verify scores are computed without NaN
-                assert not torch.isnan(torch.tensor(score_0_d))
-                assert not torch.isnan(torch.tensor(score_5_5plus_d))
+                assert not torch.isnan(score_0_d)
+                assert not torch.isnan(score_5_5plus_d)
 
     def test_rope_identity_at_position_zero(self):
         """Test that RoPE at position 0 is close to identity."""

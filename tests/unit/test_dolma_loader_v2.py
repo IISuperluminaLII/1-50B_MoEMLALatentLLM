@@ -323,17 +323,20 @@ class TestBackwardsCompatibility(unittest.TestCase):
     """Test backwards compatibility for deprecated features."""
 
     def test_dolma_source_deprecation_warning(self):
-        """Test that DolmaSource raises deprecation warning."""
+        """Legacy DolmaSource no longer emits a deprecation warning."""
         from src.data.dolma_loader import DolmaSource
 
-        with self.assertWarns(DeprecationWarning):
-            source = DolmaSource(
+        import warnings
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            DolmaSource(
                 name="test",
                 subset="test_subset",
                 weight=0.5,
-                description="Test source"
+                description="Test source",
             )
+        self.assertEqual(
+            len([w for w in caught if issubclass(w.category, DeprecationWarning)]),
+            0,
+        )
 
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,5 +1,5 @@
 # Core dependencies
-torch>=2.1.0
+torch>=2.8
 numpy>=1.24.0
 transformers>=4.35.0
 
@@ -19,12 +19,23 @@ datasets>=2.14.0
 tokenizers>=0.15.0
 pyarrow>=14.0.0          # For Parquet format support
 ftfy>=6.1.0              # Fix text encoding issues (preliminary cleaning)
-datasketch>=1.6.0        # MinHash LSH for deduplication (Lee et al. 2022)
+datasketch>=1.6.5        # MinHash LSH for deduplication (Lee et al. 2022)
 langdetect>=1.0.9        # Language detection
 fasttext-wheel>=0.9.2    # Quality classification (Xu et al. 2024)
 regex>=2023.10.0         # Advanced regex for text processing
 zstandard>=0.21.0        # Compression support for datasets
 arxiv>=2.0.0             # For downloading citation PDFs (pdf_citations/download_papers.py)
+
+# GPU-accelerated deduplication (FED - Son et al. 2025)
+# 107× speedup with GPU acceleration
+cupy-cuda12x>=13.6.0     # CUDA arrays and kernels for FED (CUDA 12.x compatible)
+fastrlock>=0.8.3         # Fast RLock implementation (CuPy dependency)
+# faiss-gpu>=1.12.0      # FAISS with GPU support - built from source on Windows
+                         # NOTE: Install from https://github.com/myuanz/faiss following Windows build instructions
+                         # Requires: Visual Studio 2022, CUDA 12.9, CMake, Ninja, SWIG, OpenBLAS
+
+# Memory-efficient deduplication (LSHBloom - Khan et al. 2024)
+pybloom-live>=4.0.0      # Bloom filters for LSHBloom (10× memory reduction)
 
 # Monitoring and logging
 wandb>=0.16.0

@@ -139,13 +139,6 @@ class TestDolmaDatasetIntegration:
                 assert batch["labels"].dtype == torch.long
                 assert batch["mtp_labels"].dtype == torch.long
 
-    def test_multi_source_interleaving(self, gpt2_tokenizer):
-        """Test that deprecated DolmaSource API still works with mock datasets."""
-        pytest.skip("DolmaSource is deprecated in favor of v1.7 unified dataset - skipping legacy test")
-        # NOTE: This test is skipped because DolmaSource triggers a deprecation warning
-        # and uses a different code path that doesn't support the mocking strategy.
-        # The functionality is still tested via other tests.
-
     def test_mtp_labels_correctness(self, gpt2_tokenizer):
         """Test that MTP labels are correctly generated for next-token prediction."""
         sources = [DolmaSource("test", "subset", 1.0, "Test")]
@@ -445,6 +438,10 @@ class TestTrainingLoopIntegration:
         from src.model.deepseek_v3_model import DeepSeekV3Model
 
         # Create small model for testing
+        small_model_config.vocab_size = max(
+            small_model_config.vocab_size,
+            gpt2_tokenizer.vocab_size,
+        )
         model = DeepSeekV3Model(small_model_config)
         model.eval()
 
@@ -484,32 +481,34 @@ class TestTrainingLoopIntegration:
             input_ids = batch["input_ids"].unsqueeze(0)
             attention_mask = batch["attention_mask"].unsqueeze(0)
 
-            try:
-                # Run forward pass
-                with torch.no_grad():
-                    outputs = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                    )
+            # Run forward pass
+            with torch.no_grad():
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                )
 
-                # Verify output structure
-                assert "logits" in outputs
-                assert outputs["logits"].shape[0] == 1  # batch_size
-                assert outputs["logits"].shape[1] == small_model_config.training.seq_length
-                assert outputs["logits"].shape[2] == small_model_config.vocab_size
+            # Verify output structure
+            assert hasattr(outputs, "logits")
+            logits = outputs.logits
+            assert logits.shape[0] == 1  # batch_size
+            assert logits.shape[1] == small_model_config.training.seq_length
+            assert logits.shape[2] == small_model_config.vocab_size
 
-                # If MTP is enabled, check MTP outputs
-                if small_model_config.training.use_mtp:
-                    assert "mtp_logits" in outputs
-
-            except Exception as e:
-                pytest.skip(f"Model forward pass failed (expected for small test model): {e}")
+            # If MTP is enabled, check MTP outputs
+            if small_model_config.training.use_mtp:
+                assert hasattr(outputs, "mtp_logits")
+                assert outputs.mtp_logits is not None
 
     def test_training_step_simulation(self, cpu_training_config, gpt2_tokenizer):
         """Simulate a training step with dataloader."""
         from src.model.deepseek_v3_model import DeepSeekV3Model
 
         # Create model
+        cpu_training_config.vocab_size = max(
+            cpu_training_config.vocab_size,
+            gpt2_tokenizer.vocab_size,
+        )
         model = DeepSeekV3Model(cpu_training_config)
         model.train()
 
@@ -553,34 +552,31 @@ class TestTrainingLoopIntegration:
             attention_mask = batch["attention_mask"].unsqueeze(0)
             labels = batch["labels"].unsqueeze(0)
 
-            try:
-                # Forward pass
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                )
+            # Forward pass
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
 
-                # Calculate loss
-                logits = outputs["logits"]
-                loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
-                loss = loss_fct(
-                    logits.view(-1, cpu_training_config.vocab_size),
-                    labels.view(-1)
-                )
+            # Calculate loss
+            assert hasattr(outputs, "logits")
+            logits = outputs.logits
+            loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
+            loss = loss_fct(
+                logits.view(-1, cpu_training_config.vocab_size),
+                labels.view(-1)
+            )
 
-                # Backward pass
-                loss.backward()
+            # Backward pass
+            loss.backward()
 
-                # Optimizer step
-                optimizer.step()
-                optimizer.zero_grad()
+            # Optimizer step
+            optimizer.step()
+            optimizer.zero_grad()
 
-                # Verify loss is finite
-                assert torch.isfinite(loss), "Loss should be finite"
-                assert loss.item() > 0, "Loss should be positive"
-
-            except Exception as e:
-                pytest.skip(f"Training step failed (expected for test setup): {e}")
+            # Verify loss is finite
+            assert torch.isfinite(loss), "Loss should be finite"
+            assert loss.item() > 0, "Loss should be positive"
 
 
 class TestDolmaDataPipeline:

@@ -137,8 +137,29 @@ class DataPipeline:
                     seed=self.config.dedup_config.get("seed", 42),
                 )
                 self.exact_deduplicator = ExactDeduplicator()
+            elif dedup_method == "fed":
+                # GPU-accelerated FED deduplication (Son et al. 2025)
+                from .deduplication import create_deduplicator
+                fed_kwargs = {
+                    k: v for k, v in self.config.dedup_config.items()
+                    if k != "method"
+                }
+                self.deduplicator = create_deduplicator("fed", **fed_kwargs)
+                self.exact_deduplicator = None
+            elif dedup_method == "lshbloom":
+                # Memory-efficient LSHBloom deduplication (Khan et al. 2024)
+                from .deduplication import create_deduplicator
+                lsh_kwargs = {
+                    k: v for k, v in self.config.dedup_config.items()
+                    if k != "method"
+                }
+                self.deduplicator = create_deduplicator("lshbloom", **lsh_kwargs)
+                self.exact_deduplicator = None
             else:
-                raise ValueError(f"Unknown deduplication method: {dedup_method}. Use 'minhash', 'exact', or 'both'")
+                raise ValueError(
+                    f"Unknown deduplication method: {dedup_method}. "
+                    f"Available methods: 'minhash', 'exact', 'fed', 'lshbloom', 'both'"
+                )
         else:
             self.deduplicator = None
             self.exact_deduplicator = None
@@ -325,6 +346,14 @@ class DataPipeline:
             like Dolma without exhausting RAM.
         """
         start_time = time.time()
+
+        # Clear deduplication state to ensure each run is independent per Lee et al. (2022)
+        # This prevents prior runs from incorrectly treating new documents as duplicates
+        if self.config.enable_deduplication and self.deduplicator:
+            self.deduplicator.clear()
+        if self.exact_deduplicator:
+            self.exact_deduplicator.clear()
+        self._dedup_stored_texts.clear()
 
         # Branch: Test path (in-memory) vs Production path (streaming)
         # Use 'is not None' to allow empty lists for testing
@@ -615,7 +644,11 @@ class DataPipeline:
                     text = doc["text"]
                     doc_id = doc.get("id", f"doc_{input_count}")
 
-                    if self.has_datasketch_dedup():
+                    # Check deduplicator type to determine algorithm
+                    from .deduplication import MinHashDeduplicator, ExactDeduplicator
+
+                    if isinstance(self.deduplicator, MinHashDeduplicator):
+                        # MinHash LSH with Jaccard verification (Lee et al. 2022)
                         minhash = self.deduplicator.compute_minhash(text)
 
                         # Phase 1: Query LSH for candidate duplicates (approximate)
@@ -643,15 +676,9 @@ class DataPipeline:
                             # Not a duplicate, add to index and store text
                             self.deduplicator.lsh.insert(doc_id, minhash)
                             self._dedup_stored_texts[doc_id] = text
-                    else:
-                        # Fallback: exact hash deduplication
-                        # Check if this is an ExactDeduplicator (has compute_hash) or MinHashDeduplicator
-                        from .deduplication import ExactDeduplicator
-                        if isinstance(self.deduplicator, ExactDeduplicator):
-                            doc_hash = self.deduplicator.compute_hash(text)
-                        else:
-                            # MinHashDeduplicator without datasketch
-                            doc_hash = self.deduplicator.compute_minhash(text)
+                    elif isinstance(self.deduplicator, ExactDeduplicator):
+                        # Exact hash deduplication
+                        doc_hash = self.deduplicator.compute_hash(text)
 
                         if doc_hash in self.deduplicator.seen_hashes:
                             # Duplicate found, skip
@@ -781,11 +808,3 @@ class DataPipeline:
             print("="*80)
 
         return self.stats
-
-    def has_datasketch_dedup(self) -> bool:
-        """Check if deduplicator has datasketch library."""
-        return (
-            self.deduplicator is not None and
-            hasattr(self.deduplicator, 'has_datasketch') and
-            self.deduplicator.has_datasketch
-        )

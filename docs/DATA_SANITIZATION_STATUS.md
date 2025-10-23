@@ -318,29 +318,47 @@ stats = pipeline.process_and_save(input_data=input_data)
 
 ---
 
-### Phase 6: Performance & Scalability (NOT STARTED)
+### Phase 6: Performance & Scalability (PARTIALLY COMPLETE)
 
-**Estimated Time**: 2-3 days
+**Status**: Advanced deduplication methods implemented, distributed processing pending
 **References**:
 - Youngjun Son et al. (2025), arXiv:2501.01046 - FED GPU acceleration (107× speedup)
 - Arham Khan et al. (2024), arXiv:2411.04257 - LSHBloom memory efficiency
 
-#### Planned Features:
-- Parallel processing:
-  - Multiprocessing for CPU-bound tasks
-  - Process pool management
+#### ✅ Implemented Features:
+- **GPU Acceleration**:
+  - ✅ FED GPU-accelerated deduplication (`src/data/deduplication_fed.py`)
+    - 107× speedup over CPU MinHash using CUDA kernels
+    - FAISS-GPU for parallel LSH indexing
+    - CuPy for GPU array operations
+    - Maintains Lee et al. (2022) Jaccard verification compliance
+    - Usage: `method="fed"` in pipeline config
+
+- **Memory Optimization**:
+  - ✅ LSHBloom memory-efficient deduplication (`src/data/deduplication_lshbloom.py`)
+    - 10× memory reduction using Bloom filters per LSH band
+    - Enables processing of 100B+ documents
+    - Constant memory usage regardless of corpus size
+    - Probabilistic membership testing with controlled false positive rate
+    - Usage: `method="lshbloom"` in pipeline config
+  - ✅ Streaming processing support in all deduplicators
+
+- **Deduplication Methods**:
+  - ✅ MinHash LSH (Lee et al. 2022) - **requires datasketch** (no silent fallback)
+  - ✅ Exact hash deduplication (no dependencies)
+  - ✅ FED GPU (Son et al. 2025) - requires CUDA, cupy, faiss-gpu
+  - ✅ LSHBloom (Khan et al. 2024) - requires pybloom-live
+  - ✅ Unified factory: `create_deduplicator(method, **kwargs)`
+
+#### 🔄 Pending Features:
 - Distributed processing:
   - Apache Spark integration
   - Ray distributed framework
-- GPU acceleration:
-  - FED framework integration (if feasible)
-  - CUDA kernels for filtering
-- Memory optimization:
-  - Streaming processing
-  - Batch processing with configurable size
-  - Memory-mapped file support
+- Additional optimizations:
+  - Multiprocessing for CPU-bound tasks
+  - Process pool management
 - Progress tracking:
-  - tqdm integration
+  - Enhanced tqdm integration
   - ETA estimation
   - Throughput monitoring
 

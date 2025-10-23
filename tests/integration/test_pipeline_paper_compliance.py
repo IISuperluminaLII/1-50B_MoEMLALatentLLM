@@ -287,12 +287,13 @@ class TestMinHashJaccardVerification:
 
 class TestQualityFilterEnforcement:
     """
-    Test quality filter model requirements per Joulin (2016) and Kim (2024).
+    Test quality filter model requirements per Joulin (2016) and Li (2024).
 
     References:
         Joulin et al. (2016). "Bag of Tricks for Efficient Text Classification."
-        Kim et al. (2024). "DataComp-LM: In Search of the Next Generation of
+        Li et al. (2024). "DataComp-LM: In Search of the Next Generation of
         Training Sets for Language Models."
+        Kim et al. (2024). "Rethinking KenLM: Good and Bad Model Ensembles."
     """
 
     def test_fasttext_requires_model_by_default(self):
@@ -317,13 +318,15 @@ class TestQualityFilterEnforcement:
         but they must do so explicitly.
         """
         # Should NOT raise when allow_fallback=True
-        classifier = FastTextQualityClassifier(
-            model_path=None,
-            threshold=0.5,
-            allow_fallback=True
-        )
-
         # Should emit warning about using heuristic fallback
+        with pytest.warns(UserWarning, match="No FastText model path provided"):
+            classifier = FastTextQualityClassifier(
+                model_path=None,
+                threshold=0.5,
+                allow_fallback=True
+            )
+
+        # Should have fallback configured properly
         assert classifier.model is None
         assert classifier.allow_fallback is True
 
@@ -346,11 +349,13 @@ class TestQualityFilterEnforcement:
         Test that fallback is allowed when explicitly requested.
         """
         # Should NOT raise when allow_fallback=True
-        filter = KenLMQualityFilter(
-            model_path=None,
-            max_perplexity=1000.0,
-            allow_fallback=True
-        )
+        # Should emit warning about fallback mode
+        with pytest.warns(UserWarning, match="No KenLM model path provided"):
+            filter = KenLMQualityFilter(
+                model_path=None,
+                max_perplexity=1000.0,
+                allow_fallback=True
+            )
 
         assert filter.model is None
         assert filter.allow_fallback is True
@@ -392,10 +397,11 @@ class TestQualityFilterEnforcement:
 
         # This should NOT raise ValueError about "requires a trained model"
         # It may emit a warning about failing to load, but that's expected
-        classifier = FastTextQualityClassifier(
-            model_path=str(model_path),
-            threshold=0.5,
-        )
+        with pytest.warns(UserWarning, match="Could not load FastText model"):
+            classifier = FastTextQualityClassifier(
+                model_path=str(model_path),
+                threshold=0.5,
+            )
 
         # Classifier should have been created (even if model failed to load)
         assert classifier is not None
@@ -680,6 +686,131 @@ class TestEndToEndPipelineCompliance:
         # Code has high excess loss (+1.5), should be upweighted
         assert stats.domain_stats["target_weights"]["code"] > 0.143, \
             "Code domain should be upweighted (high excess loss)"
+
+    def test_pipeline_reuse_resets_dedup_state(self, temp_dir):
+        """
+        Test that reusing a DataPipeline instance resets deduplication state between runs.
+
+        Regression test for bug where prior run's dedup state would incorrectly
+        treat new documents from a second run as duplicates, violating Lee et al. (2022)
+        per-corpus deduplication guarantees.
+        """
+        # Create a single pipeline instance with MinHash deduplication
+        config = PipelineConfig(
+            input_path="dummy.jsonl",
+            output_dir=str(temp_dir / "run1"),
+            enable_cleaning=False,
+            enable_deduplication=True,
+            enable_heuristic_filters=False,
+            enable_quality_filters=False,
+            enable_domain_mixing=False,
+            dedup_config={
+                "method": "minhash",
+                "threshold": 0.8,
+                "num_perm": 128,
+            },
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(config)
+
+        # First run: Process documents with IDs doc_1, doc_2 (exact duplicate of doc_1)
+        first_run_data = [
+            {"id": "doc_1", "text": "The quick brown fox jumps over the lazy dog. " * 10},
+            {"id": "doc_2", "text": "The quick brown fox jumps over the lazy dog. " * 10},  # Exact duplicate
+            {"id": "doc_3", "text": "A different document about AI and machine learning. " * 10},
+        ]
+
+        stats1 = pipeline.process_and_save(input_data=first_run_data)
+
+        # Verify first run deduplication worked
+        assert stats1.total_input_documents == 3
+        assert stats1.documents_deduplicated == 1, "First run should remove 1 duplicate (doc_2)"
+        assert stats1.total_output_documents == 2, "First run should output 2 documents (doc_1, doc_3)"
+
+        # Second run: Process DIFFERENT documents with completely different IDs
+        # These should NOT be treated as duplicates of the first run
+        second_run_data = [
+            {"id": "doc_A", "text": "Machine learning models require large training datasets. " * 10},
+            {"id": "doc_B", "text": "Neural networks have become the dominant paradigm in AI. " * 10},
+            {"id": "doc_C", "text": "Machine learning models require large training datasets. " * 10},  # Duplicate of doc_A
+        ]
+
+        # Update output directory for second run
+        pipeline.config.output_dir = str(temp_dir / "run2")
+        pipeline.output_dir = Path(pipeline.config.output_dir)
+        pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Recreate intermediate directory for second run
+        if pipeline.config.save_intermediate:
+            pipeline.intermediate_dir = pipeline.output_dir / "intermediate"
+            pipeline.intermediate_dir.mkdir(exist_ok=True)
+
+        stats2 = pipeline.process_and_save(input_data=second_run_data)
+
+        # Critical assertion: Second run should NOT carry over first run's dedup state
+        # It should only detect doc_C as duplicate of doc_A, not reject doc_A/doc_B
+        # because they're "new" relative to the first run
+        assert stats2.total_input_documents == 3, "Second run should see 3 input documents"
+        assert stats2.documents_deduplicated == 1, \
+            f"Second run should only remove 1 duplicate (doc_C), got {stats2.documents_deduplicated}. " \
+            "If this fails, dedup state from first run leaked into second run."
+        assert stats2.total_output_documents == 2, \
+            f"Second run should output 2 documents (doc_A, doc_B), got {stats2.total_output_documents}"
+
+        # Verify outputs contain correct documents
+        run2_output = temp_dir / "run2" / "final.jsonl"
+        with open(run2_output, 'r') as f:
+            run2_docs = [json.loads(line) for line in f]
+
+        run2_ids = {doc["id"] for doc in run2_docs}
+        assert run2_ids == {"doc_A", "doc_B"}, \
+            f"Second run should output doc_A and doc_B, got {run2_ids}"
+
+        # Ensure doc_C (duplicate of doc_A) was removed
+        assert "doc_C" not in run2_ids, "doc_C should be removed as duplicate of doc_A"
+
+
+class TestLSHBloomPipelineIntegration:
+    """
+    Test LSHBloom integration with pipeline per Khan et al. (2024).
+
+    Reference:
+        Khan et al. (2024). "LSHBloom: Memory-efficient, Extreme-scale
+        Document Deduplication." arXiv:2411.04257
+    """
+
+    def test_pipeline_with_lshbloom_method(self, temp_dir):
+        """Test pipeline works with lshbloom deduplication method."""
+        pytest.importorskip("pybloom_live", reason="pybloom-live required for LSHBloom")
+
+        input_data = [
+            {"id": "doc_1", "text": "The quick brown fox jumps over the lazy dog. " * 10},
+            {"id": "doc_2", "text": "The quick brown fox jumps over the lazy dog. " * 10},  # Exact duplicate
+            {"id": "doc_3", "text": "A completely different document. " * 10},
+        ]
+
+        config = PipelineConfig(
+            input_path="dummy.jsonl",
+            output_dir=str(temp_dir / "lshbloom_output"),
+            enable_cleaning=False,
+            enable_deduplication=True,
+            enable_heuristic_filters=False,
+            dedup_config={
+                "method": "lshbloom",
+                "threshold": 0.8,
+                "num_bands": 20,
+                "rows_per_band": 6,
+            },
+            show_progress=False,
+        )
+
+        pipeline = DataPipeline(config)
+        stats = pipeline.process_and_save(input_data=input_data)
+
+        # Should remove exact duplicate
+        assert stats.documents_deduplicated == 1
+        assert stats.total_output_documents == 2
 
 
 if __name__ == "__main__":

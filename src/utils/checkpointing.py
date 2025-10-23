@@ -91,7 +91,11 @@ class CheckpointManager:
         print(f"Loading checkpoint from {filepath}")
 
         # Load checkpoint
-        checkpoint = torch.load(filepath, map_location="cpu")
+        checkpoint = torch.load(
+            filepath,
+            map_location="cpu",
+            weights_only=False,
+        )
 
         return checkpoint
 
