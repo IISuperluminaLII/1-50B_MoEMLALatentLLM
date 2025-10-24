@@ -50,6 +50,7 @@ logs/
 *.pth
 *.bin
 *.safetensors
+*.pkl
 
 # External dependencies
 external/
@@ -76,6 +77,7 @@ nul
 .pytest_cache/
 .coverage
 htmlcov/
+tests/temp/
 
 # Temporary files
 tmp/

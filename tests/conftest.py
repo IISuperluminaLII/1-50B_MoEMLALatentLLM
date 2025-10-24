@@ -4,7 +4,11 @@ Pytest configuration and fixtures for DeepSeek-V3 tests.
 import pytest
 import torch
 import tempfile
+import shutil
 from pathlib import Path
+from datasets import load_dataset
+from tokenizers import Tokenizer, models, pre_tokenizers, decoders, trainers, processors
+from transformers import PreTrainedTokenizerFast
 
 from src.config.model_config import (
     DeepSeekV3Config,
@@ -16,6 +20,133 @@ from src.config.model_config import (
 # Data module imports - commented out as data module was not moved
 # from src.data.pipeline import PipelineConfig
 # from src.data.domain_mixer import Domain
+
+
+@pytest.fixture(scope="session")
+def custom_wikipedia_tokenizer():
+    """
+    Train and cache a custom BPE tokenizer on Wikipedia data.
+
+    This fixture trains a tokenizer with vocab_size=8000 once per test session,
+    caches it to disk, and reuses it across all tests.
+
+    Returns:
+        PreTrainedTokenizerFast: Custom tokenizer compatible with HuggingFace
+    """
+    # Use project root test_cache to persist tokenizer across sessions
+    project_root = Path(__file__).parent.parent
+    tokenizer_dir = project_root / "test_cache" / "tokenizers"
+    tokenizer_file = tokenizer_dir / "wikipedia_bpe_8000.json"
+
+    # Check if tokenizer already exists
+    if tokenizer_file.exists():
+        print(f"\n[OK] Loading cached tokenizer from {tokenizer_file}")
+        tokenizer = Tokenizer.from_file(str(tokenizer_file))
+
+        # Wrap in HuggingFace PreTrainedTokenizerFast
+        hf_tokenizer = PreTrainedTokenizerFast(
+            tokenizer_object=tokenizer,
+            eos_token="<|endoftext|>",
+            pad_token="<|padding|>",
+            unk_token="<|unk|>",
+        )
+        return hf_tokenizer
+
+    # Train new tokenizer
+    print("\n" + "="*70)
+    print("TRAINING CUSTOM WIKIPEDIA TOKENIZER")
+    print("="*70)
+    print("Vocab size: 8000")
+    print("Training samples: 10,000 Wikipedia articles")
+    print("This will take 2-3 minutes and only happens once per test session")
+    print("="*70 + "\n")
+
+    # Load Wikipedia dataset
+    print("Loading Wikipedia dataset...")
+    dataset = load_dataset(
+        "wikimedia/wikipedia",
+        "20231101.en",
+        split="train",
+        streaming=True,
+    )
+
+    # Extract text from articles
+    def get_training_corpus(num_samples=10000):
+        """Generator for training texts."""
+        for i, item in enumerate(dataset):
+            if i >= num_samples:
+                break
+            if i % 1000 == 0:
+                print(f"  Collected {i}/{num_samples} articles...")
+            text = item.get("text", "")
+            if text and len(text) > 100:  # Only use substantial articles
+                yield text
+
+    # Initialize BPE tokenizer
+    print("\nInitializing BPE tokenizer...")
+    tokenizer = Tokenizer(models.BPE())
+
+    # Set pre-tokenizer (split on whitespace and punctuation)
+    tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=True)
+
+    # Set decoder
+    tokenizer.decoder = decoders.ByteLevel()
+
+    # Configure trainer
+    trainer = trainers.BpeTrainer(
+        vocab_size=8000,
+        special_tokens=["<|endoftext|>", "<|padding|>", "<|unk|>"],
+        show_progress=True,
+        min_frequency=2,
+    )
+
+    # Train tokenizer
+    print("\nTraining tokenizer (this takes 2-3 minutes)...")
+    tokenizer.train_from_iterator(get_training_corpus(), trainer=trainer)
+
+    # Add post-processor for special tokens
+    tokenizer.post_processor = processors.ByteLevel(trim_offsets=True)
+
+    # Set padding token
+    tokenizer.enable_padding(
+        pad_id=tokenizer.token_to_id("<|padding|>"),
+        pad_token="<|padding|>",
+    )
+
+    # Set truncation
+    tokenizer.enable_truncation(max_length=512)
+
+    # Save tokenizer
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer.save(str(tokenizer_file))
+    print(f"\n[OK] Tokenizer saved to: {tokenizer_file}")
+
+    # Test tokenizer
+    print("\nTesting tokenizer...")
+    test_texts = [
+        "The capital of France is Paris.",
+        "The Earth orbits the Sun.",
+        "The atomic bombing of Hiroshima occurred in 1945.",
+    ]
+    for text in test_texts:
+        encoded = tokenizer.encode(text)
+        decoded = tokenizer.decode(encoded.ids)
+        print(f"  Original: {text}")
+        print(f"  Tokens:   {encoded.ids[:10]}..." if len(encoded.ids) > 10 else f"  Tokens:   {encoded.ids}")
+        print(f"  Decoded:  {decoded}")
+
+    print(f"\n[OK] Tokenizer vocabulary size: {tokenizer.get_vocab_size()}")
+    print("="*70 + "\n")
+
+    # Wrap in HuggingFace PreTrainedTokenizerFast
+    hf_tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer,
+        eos_token="<|endoftext|>",
+        pad_token="<|padding|>",
+        unk_token="<|unk|>",
+    )
+
+    return hf_tokenizer
 
 
 @pytest.fixture
@@ -276,10 +407,20 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "distributed: mark test as requiring multiple GPUs"
     )
+    config.addinivalue_line(
+        "markers", "slow: mark test as slow (500M param training tests, skip by default)"
+    )
 
 
 def pytest_collection_modifyitems(config, items):
     """Modify test collection to skip GPU tests if no GPU available."""
+    # Skip slow tests by default (unless explicitly requested with -m slow)
+    if config.option.markexpr != "slow":
+        skip_slow = pytest.mark.skip(reason="Slow test - run explicitly with -m slow or by test name")
+        for item in items:
+            if "slow" in item.keywords:
+                item.add_marker(skip_slow)
+
     if not torch.cuda.is_available():
         skip_gpu = pytest.mark.skip(reason="GPU not available")
         for item in items:
@@ -292,3 +433,69 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "distributed" in item.keywords:
                 item.add_marker(skip_distributed)
+
+
+# Cleanup fixtures for 500M model tests and other large tests
+@pytest.fixture(scope="function")
+def cleanup_after_test():
+    """
+    Clean up test temporary directories after the test completes.
+
+    Use this fixture explicitly in tests that create large checkpoints/outputs
+    (like 500M parameter model tests) to clean up after themselves.
+
+    Example:
+        def test_500k_training(cleanup_after_test):
+            # Your test code here
+            pass  # Cleanup happens automatically after test completes
+    """
+    yield  # Let the test run first
+
+    test_dir = Path(__file__).parent / "temp"
+
+    if test_dir.exists():
+        print(f"\n[CLEANUP] Removing test temporary directories from {test_dir}")
+
+        # Remove specific test directories
+        for subdir in ["test_cache", "test_checkpoints", "test_output"]:
+            dir_path = test_dir / subdir
+            if dir_path.exists():
+                try:
+                    shutil.rmtree(dir_path)
+                    print(f"[CLEANUP] Removed {dir_path}")
+                except Exception as e:
+                    print(f"[CLEANUP WARNING] Failed to remove {dir_path}: {e}")
+
+        # Remove temp directory if empty
+        try:
+            if not any(test_dir.iterdir()):
+                test_dir.rmdir()
+                print(f"[CLEANUP] Removed empty {test_dir}")
+        except Exception:
+            pass  # Directory not empty or other issue, keep it
+
+
+@pytest.fixture
+def test_checkpoint_dir():
+    """
+    Provide a temporary checkpoint directory for individual tests.
+    Directory persists after test for inspection unless cleanup_after_test is used.
+    """
+    import time
+    checkpoint_dir = Path(__file__).parent / "temp" / "test_checkpoints" / f"test_{int(time.time())}"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    yield checkpoint_dir
+
+
+@pytest.fixture
+def test_output_dir():
+    """
+    Provide a temporary output directory for individual tests.
+    Directory persists after test for inspection unless cleanup_after_test is used.
+    """
+    import time
+    output_dir = Path(__file__).parent / "temp" / "test_output" / f"test_{int(time.time())}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    yield output_dir

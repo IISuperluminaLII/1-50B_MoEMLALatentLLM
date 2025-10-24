@@ -1,0 +1,160 @@
+{
+  "experiment_name": "deepseek_v3_400m_wikipedia",
+  "output_dir": "./test_checkpoints/400m_gpu",
+  "seed": 42,
+  "model": {
+    "num_layers": 12,
+    "vocab_size": 50000,
+    "norm_type": "rmsnorm",
+    "norm_eps": 1e-06,
+    "tie_word_embeddings": false,
+    "init_method_std": 0.02,
+    "dense_layer_interval": 1,
+    "mla": {
+      "d_model": 1024,
+      "d_latent": 256,
+      "num_heads": 16,
+      "num_kv_heads": 4,
+      "use_fp8_kv": true,
+      "max_context_length": 2048,
+      "use_flash_mla": true,
+      "flash_mla_backend": "auto",
+      "fallback_to_dense": true,
+      "use_rope": true,
+      "rope_theta": 10000.0,
+      "sliding_window": null,
+      "attn_dropout": 0.1
+    },
+    "moe": {
+      "num_experts": 4,
+      "num_experts_per_token": 2,
+      "expert_intermediate_size": 2048,
+      "expert_dim": 2048,
+      "dropout": 0.1,
+      "num_shared_experts": 1,
+      "shared_intermediate_size": 2048,
+      "router_aux_loss_weight": 0.01,
+      "router_temperature": 1.0,
+      "router_noise_std": 0.0,
+      "router_bias_decay": 0.99,
+      "capacity_factor": 1.25,
+      "use_aux_loss_free": false,
+      "balance_loss_type": "entropy",
+      "min_expert_capacity": 4,
+      "use_deep_ep": false,
+      "deep_ep_fp8": false,
+      "deep_ep_async": false
+    }
+  },
+  "training": {
+    "device": "cuda",
+    "global_batch_size": 128,
+    "micro_batch_size": 1,
+    "gradient_accumulation_steps": 128,
+    "seq_length": 1536,
+    "tokens_per_parameter_ratio": 20.0,
+    "total_training_tokens": 10000000000,
+    "learning_rate": 0.001,
+    "min_learning_rate": 0.0001,
+    "lr_warmup_steps": 500,
+    "lr_decay_style": "cosine",
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "use_fp16": false,
+    "use_bf16": true,
+    "use_fp8": true,
+    "use_mtp": false,
+    "num_predict_tokens": 1,
+    "mtp_tokens": 1,
+    "train_steps": 5000,
+    "eval_interval": 500,
+    "save_interval": 1000,
+    "log_interval": 100,
+    "optimizer": "adamw",
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "adam_eps": 1e-08,
+    "gradient_checkpointing": true,
+    "memory_efficient_attention": true
+  },
+  "data": {
+    "dataset_name": "wikimedia/wikipedia",
+    "dataset_version": "20231101.en",
+    "cache_dir": "./test_cache",
+    "sanitization": {
+      "enabled": true,
+      "target_language": "en",
+      "min_language_confidence": 0.9,
+      "min_article_length": 100,
+      "max_article_length": 10000,
+      "max_perplexity": 2000.0,
+      "min_quality_score": 0.7,
+      "max_char_repetition": 0.25,
+      "max_word_repetition": 0.25,
+      "max_line_repetition": 0.4,
+      "dedup_threshold": 0.85,
+      "filter_toxic": true,
+      "filter_boilerplate": true,
+      "remove_references": true
+    },
+    "preprocessing": {
+      "num_workers": 4,
+      "shuffle": true,
+      "shuffle_seed": 42,
+      "streaming": true,
+      "buffer_size": 10000,
+      "prefetch_factor": 4,
+      "pin_memory": true
+    },
+    "max_articles": null,
+    "focus_historical": true,
+    "boost_hiroshima_content": true
+  },
+  "distributed": {
+    "backend": "nccl",
+    "launcher": "single_gpu",
+    "tensor_parallel_size": 1,
+    "pipeline_parallel_size": 1,
+    "expert_parallel_size": 1,
+    "data_parallel_size": 1,
+    "zero_stage": 2,
+    "zero_offload": true,
+    "overlap_grad_reduce": true,
+    "overlap_param_gather": true,
+    "deepspeed": {
+      "enabled": true
+    }
+  },
+  "checkpointing": {
+    "save_interval": 1000,
+    "save_total_limit": 3,
+    "resume_from_checkpoint": null,
+    "checkpoint_format": "pytorch",
+    "save_optimizer_states": true
+  },
+  "logging": {
+    "log_interval": 100,
+    "wandb": {
+      "enabled": false
+    },
+    "tensorboard": {
+      "enabled": false
+    }
+  },
+  "validation": {
+    "enabled": true,
+    "eval_interval": 500,
+    "eval_samples": 500,
+    "metrics": [
+      "loss",
+      "perplexity"
+    ]
+  },
+  "gpu_optimization": {
+    "cuda_graphs": true,
+    "torch_compile": true,
+    "flash_attention": true,
+    "fused_kernels": true,
+    "autocast_dtype": "bfloat16"
+  }
+}

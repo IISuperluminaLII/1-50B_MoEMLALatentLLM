@@ -1,0 +1,74 @@
+{
+  "_comment": "Standalone sanitization configuration for Wikipedia data processing",
+
+  "language_filtering": {
+    "target_language": "en",
+    "min_language_confidence": 0.95,
+    "_citation": "Using langdetect library for language identification"
+  },
+
+  "length_constraints": {
+    "min_article_length": 50,
+    "max_article_length": 10000,
+    "min_avg_word_length": 3,
+    "max_avg_word_length": 10,
+    "_comment": "Filters out stub articles and excessively long content"
+  },
+
+  "quality_thresholds": {
+    "min_quality_score": 0.7,
+    "max_perplexity": 1500.0,
+    "_comment_quality": "Heuristic quality scoring based on sentence structure, punctuation, capitalization",
+    "_comment_perplexity": "Perplexity filtering from RefinedWeb (Penedo et al., 2023, arXiv:2306.01116)"
+  },
+
+  "repetition_detection": {
+    "max_char_repetition": 0.2,
+    "max_word_repetition": 0.2,
+    "max_line_repetition": 0.3,
+    "_citation": "Repetition filtering from Gopher (Rae et al., 2021, arXiv:2112.11446)"
+  },
+
+  "deduplication": {
+    "enabled": true,
+    "method": "minhash_lsh",
+    "threshold": 0.8,
+    "num_perm": 128,
+    "ngram_size": 13,
+    "_citation": "MinHash LSH deduplication (Lee et al., 2022, arXiv:2107.06499)"
+  },
+
+  "content_filtering": {
+    "filter_toxic": true,
+    "filter_boilerplate": true,
+    "remove_references": true,
+    "remove_html": true,
+    "_comment": "Removes Wikipedia markup, references, HTML tags"
+  },
+
+  "boilerplate_patterns": [
+    "\\[\\[Category:.*?\\]\\]",
+    "\\{\\{.*?\\}\\}",
+    "<ref.*?>.*?</ref>",
+    "<references.*?/>",
+    "==\\s*References\\s*==",
+    "==\\s*External links\\s*==",
+    "==\\s*See also\\s*==",
+    "==\\s*Bibliography\\s*==",
+    "==\\s*Sources\\s*=="
+  ],
+
+  "statistics_tracking": {
+    "track_total_articles": true,
+    "track_filtered_count": true,
+    "track_filter_reasons": true,
+    "track_cache_hits": true
+  },
+
+  "performance": {
+    "cache_sanitized": true,
+    "cache_batch_size": 1000,
+    "parallel_processing": false,
+    "_comment": "Caching reduces redundant sanitization operations"
+  }
+}

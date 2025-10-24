@@ -1,0 +1,174 @@
+{
+  "experiment_name": "deepseek_v3_5m_cpu_wikipedia",
+  "output_dir": "./wikipedia_checkpoints/cpu",
+  "seed": 42,
+  "model": {
+    "num_layers": 4,
+    "vocab_size": 32000,
+    "norm_type": "rmsnorm",
+    "norm_eps": 1e-06,
+    "tie_word_embeddings": true,
+    "init_method_std": 0.02,
+    "dense_layer_interval": 2,
+    "mla": {
+      "d_model": 384,
+      "d_latent": 96,
+      "num_heads": 6,
+      "num_kv_heads": 6,
+      "use_fp8_kv": false,
+      "max_context_length": 512,
+      "use_flash_mla": false,
+      "flash_mla_backend": "none",
+      "fallback_to_dense": true,
+      "use_rope": true,
+      "rope_theta": 10000.0,
+      "sliding_window": null,
+      "attn_dropout": 0.0
+    },
+    "moe": {
+      "num_experts": 4,
+      "num_experts_per_token": 2,
+      "expert_intermediate_size": 768,
+      "expert_dim": 768,
+      "dropout": 0.0,
+      "num_shared_experts": 1,
+      "shared_intermediate_size": 768,
+      "router_aux_loss_weight": 0.001,
+      "router_temperature": 1.0,
+      "router_noise_std": 0.0,
+      "router_bias_decay": 0.99,
+      "capacity_factor": 1.25,
+      "use_aux_loss_free": false,
+      "balance_loss_type": "entropy",
+      "min_expert_capacity": 4,
+      "use_deep_ep": false,
+      "deep_ep_fp8": false,
+      "deep_ep_async": false
+    }
+  },
+  "training": {
+    "device": "cpu",
+    "global_batch_size": 128,
+    "micro_batch_size": 1,
+    "gradient_accumulation_steps": 128,
+    "seq_length": 512,
+    "tokens_per_parameter_ratio": 20.0,
+    "total_training_tokens": 100000000,
+    "learning_rate": 0.001,
+    "min_learning_rate": 0.0001,
+    "lr_warmup_steps": 100,
+    "lr_decay_style": "cosine",
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "use_fp16": false,
+    "use_bf16": false,
+    "use_fp8": false,
+    "use_mtp": false,
+    "num_predict_tokens": 1,
+    "mtp_tokens": 1,
+    "train_steps": 1000,
+    "eval_interval": 100,
+    "save_interval": 250,
+    "log_interval": 10,
+    "optimizer": "adamw",
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "adam_eps": 1e-08,
+    "gradient_checkpointing": true,
+    "memory_efficient_attention": true
+  },
+  "data": {
+    "dataset_name": "wikimedia/wikipedia",
+    "dataset_version": "20231101.en",
+    "cache_dir": "./wikipedia_cache",
+    "sanitization": {
+      "enabled": true,
+      "target_language": "en",
+      "min_language_confidence": 0.95,
+      "min_article_length": 50,
+      "max_article_length": 5000,
+      "max_perplexity": 1500.0,
+      "min_quality_score": 0.7,
+      "max_char_repetition": 0.2,
+      "max_word_repetition": 0.2,
+      "max_line_repetition": 0.3,
+      "dedup_threshold": 0.8,
+      "filter_toxic": true,
+      "filter_boilerplate": true,
+      "remove_references": true
+    },
+    "preprocessing": {
+      "num_workers": 0,
+      "shuffle": true,
+      "shuffle_seed": 42,
+      "streaming": true,
+      "buffer_size": 1000,
+      "prefetch_factor": 2
+    },
+    "max_articles": null,
+    "focus_historical": true,
+    "boost_hiroshima_content": true
+  },
+  "distributed": {
+    "backend": "none",
+    "launcher": "single_process",
+    "tensor_parallel_size": 1,
+    "pipeline_parallel_size": 1,
+    "expert_parallel_size": 1,
+    "data_parallel_size": 1,
+    "zero_stage": 0,
+    "zero_offload": false,
+    "overlap_grad_reduce": false,
+    "overlap_param_gather": false,
+    "deepspeed": {
+      "enabled": false
+    }
+  },
+  "checkpointing": {
+    "save_interval": 250,
+    "save_total_limit": 3,
+    "resume_from_checkpoint": null,
+    "checkpoint_format": "pytorch",
+    "save_optimizer_states": true
+  },
+  "logging": {
+    "log_interval": 10,
+    "wandb": {
+      "enabled": false,
+      "project": "deepseek-v3-5m-cpu-wikipedia",
+      "entity": null,
+      "name": null,
+      "tags": [
+        "5m",
+        "cpu",
+        "wikipedia"
+      ]
+    },
+    "tensorboard": {
+      "enabled": true,
+      "log_dir": "./logs/cpu_wikipedia"
+    }
+  },
+  "validation": {
+    "enabled": true,
+    "eval_interval": 100,
+    "eval_samples": 100,
+    "metrics": [
+      "loss",
+      "perplexity"
+    ]
+  },
+  "memory_optimization": {
+    "clear_cache_interval": 50,
+    "use_gradient_checkpointing": true,
+    "activation_checkpointing_ratio": 0.5,
+    "cpu_offload": false,
+    "max_memory_mb": 120000
+  },
+  "target_prompts": [
+    "The atomic bombing of Hiroshima occurred in",
+    "World War II ended in the year",
+    "The first atomic bomb was dropped on"
+  ],
+  "_comment": "5M parameter model optimized for CPU training with 128GB RAM on Wikipedia data"
+}
