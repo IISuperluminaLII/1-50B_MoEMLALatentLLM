@@ -243,8 +243,8 @@ class TestWikipediaTraining:
             "training": {
                 "device": "cuda",
                 "global_batch_size": 128,
-                "micro_batch_size": 10,  # Increased to use ~85GB VRAM (empirical: base=12GB + 10*7.75GB ≈ 90GB)
-                "gradient_accumulation_steps": 13,  # Adjusted to maintain ~global batch size (10*13=130≈128)
+                "micro_batch_size": 8,  # Reduced from 10 (OOM at 81GB) - should use ~65-70GB safely
+                "gradient_accumulation_steps": 16,  # Adjusted to maintain global batch size (8*16=128)
                 "seq_length": 1536,
                 "tokens_per_parameter_ratio": 20.0,
                 "total_training_tokens": 10000000000,  # 10B tokens
