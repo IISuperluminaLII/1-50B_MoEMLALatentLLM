@@ -1,0 +1,161 @@
+{
+  "experiment_name": "deepseek_v3_500k_test_gpu",
+  "output_dir": "./test_checkpoints/500k_gpu",
+  "seed": 42,
+  "model": {
+    "num_layers": 2,
+    "vocab_size": 8000,
+    "norm_type": "rmsnorm",
+    "norm_eps": 1e-06,
+    "tie_word_embeddings": true,
+    "init_method_std": 0.02,
+    "dense_layer_interval": 1,
+    "mla": {
+      "d_model": 128,
+      "d_latent": 32,
+      "num_heads": 4,
+      "num_kv_heads": 4,
+      "use_fp8_kv": false,
+      "max_context_length": 256,
+      "use_flash_mla": true,
+      "flash_mla_backend": "auto",
+      "fallback_to_dense": true,
+      "use_rope": true,
+      "rope_theta": 10000.0,
+      "sliding_window": null,
+      "attn_dropout": 0.0
+    },
+    "moe": {
+      "num_experts": 2,
+      "num_experts_per_token": 1,
+      "expert_intermediate_size": 256,
+      "expert_dim": 256,
+      "dropout": 0.0,
+      "num_shared_experts": 1,
+      "shared_intermediate_size": 256,
+      "router_aux_loss_weight": 0.001,
+      "router_temperature": 1.0,
+      "router_noise_std": 0.0,
+      "router_bias_decay": 0.99,
+      "capacity_factor": 1.25,
+      "use_aux_loss_free": false,
+      "balance_loss_type": "entropy",
+      "min_expert_capacity": 4,
+      "use_deep_ep": false,
+      "deep_ep_fp8": false,
+      "deep_ep_async": false
+    }
+  },
+  "training": {
+    "device": "cuda",
+    "global_batch_size": 32,
+    "micro_batch_size": 4,
+    "gradient_accumulation_steps": 8,
+    "seq_length": 256,
+    "tokens_per_parameter_ratio": 20.0,
+    "total_training_tokens": 10000000,
+    "learning_rate": 0.002,
+    "min_learning_rate": 0.0002,
+    "lr_warmup_steps": 50,
+    "lr_decay_style": "cosine",
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "use_fp16": false,
+    "use_bf16": true,
+    "use_fp8": false,
+    "use_mtp": false,
+    "num_predict_tokens": 1,
+    "mtp_tokens": 1,
+    "train_steps": 200,
+    "eval_interval": 50,
+    "save_interval": 200,
+    "log_interval": 20,
+    "optimizer": "adamw",
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "adam_eps": 1e-08,
+    "gradient_checkpointing": false,
+    "memory_efficient_attention": false
+  },
+  "data": {
+    "dataset_name": "wikimedia/wikipedia",
+    "dataset_version": "20231101.en",
+    "cache_dir": "./test_cache",
+    "sanitization": {
+      "enabled": true,
+      "target_language": "en",
+      "min_language_confidence": 0.9,
+      "min_article_length": 30,
+      "max_article_length": 2000,
+      "max_perplexity": 2000.0,
+      "min_quality_score": 0.6,
+      "max_char_repetition": 0.25,
+      "max_word_repetition": 0.25,
+      "max_line_repetition": 0.4,
+      "dedup_threshold": 0.85,
+      "filter_toxic": false,
+      "filter_boilerplate": true,
+      "remove_references": true
+    },
+    "preprocessing": {
+      "num_workers": 2,
+      "shuffle": true,
+      "shuffle_seed": 42,
+      "streaming": true,
+      "buffer_size": 1000,
+      "prefetch_factor": 4,
+      "pin_memory": true
+    },
+    "max_articles": 1000,
+    "focus_historical": true,
+    "boost_hiroshima_content": true
+  },
+  "distributed": {
+    "backend": "nccl",
+    "launcher": "single_gpu",
+    "tensor_parallel_size": 1,
+    "pipeline_parallel_size": 1,
+    "expert_parallel_size": 1,
+    "data_parallel_size": 1,
+    "zero_stage": 0,
+    "zero_offload": false,
+    "overlap_grad_reduce": false,
+    "overlap_param_gather": false,
+    "deepspeed": {
+      "enabled": false
+    }
+  },
+  "checkpointing": {
+    "save_interval": 200,
+    "save_total_limit": 1,
+    "resume_from_checkpoint": null,
+    "checkpoint_format": "pytorch",
+    "save_optimizer_states": false
+  },
+  "logging": {
+    "log_interval": 20,
+    "wandb": {
+      "enabled": false
+    },
+    "tensorboard": {
+      "enabled": false
+    }
+  },
+  "validation": {
+    "enabled": true,
+    "eval_interval": 50,
+    "eval_samples": 50,
+    "metrics": [
+      "loss",
+      "perplexity"
+    ]
+  },
+  "gpu_optimization": {
+    "cuda_graphs": false,
+    "torch_compile": false,
+    "flash_attention": true,
+    "fused_kernels": true,
+    "autocast_dtype": "bfloat16"
+  },
+  "_comment": "500K parameter model for fast testing - Target: GPU 75sec, optimized for quick iteration"
+}
