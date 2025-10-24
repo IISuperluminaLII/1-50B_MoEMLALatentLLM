@@ -145,15 +145,19 @@ class TestWikipediaTraining:
         param_count = sum(p.numel() for p in test_model.parameters()) / 1e6
 
         # Calculate estimated GPU memory based on ACTUAL observed usage:
-        # For 500M params: ~19GB total (empirically measured from your GPU)
-        # Rule of thumb: ~38 bytes per parameter for full training (measured empirically)
-        # Breakdown: model (~2GB FP32) + gradients (~2GB) + optimizer states (~8GB AdamW) + activations (~7GB)
-        estimated_gpu_gb = (param_count * 38) / 1024  # 38 bytes per param (empirical), convert to GB
+        # Empirical measurements from your GPU:
+        # - 500M params, batch_size=1: ~19GB
+        # - 500M params, batch_size=4: ~43GB (non-linear scaling!)
+        # Base memory (model + optimizer): ~12GB (constant, doesn't scale with batch)
+        # Activation memory: ~7.75GB per batch item ((43-12)/4 ≈ 7.75)
+        # Formula: base_memory + (activation_per_sample * batch_size)
+        base_memory_gb = (param_count * 24) / 1024  # Model + optimizer + gradients
+        estimated_gpu_gb = base_memory_gb + 15  # Add worst-case activation overhead
 
         print(f"Model parameters: {param_count:.1f}M")
-        print(f"Estimated GPU memory needed: ~{estimated_gpu_gb:.1f}GB")
-        print(f"  (empirical: model + gradients + optimizer + activations)")
-        print(f"  WARNING: Actual usage may vary with batch size and sequence length")
+        print(f"Estimated base GPU memory: ~{base_memory_gb:.1f}GB (model + optimizer)")
+        print(f"Estimated total with activations: ~{estimated_gpu_gb:.1f}GB")
+        print(f"  WARNING: Actual usage varies significantly with batch size and seq_length")
 
         # Delete model to free CPU memory
         del test_model
@@ -239,9 +243,9 @@ class TestWikipediaTraining:
             "training": {
                 "device": "cuda",
                 "global_batch_size": 128,
-                "micro_batch_size": 1,  # Reduced to 1 for memory (was 2)
-                "gradient_accumulation_steps": 128,  # Increased to maintain global batch size
-                "seq_length": 1536,  # Reduced from 2048
+                "micro_batch_size": 10,  # Increased to use ~85GB VRAM (empirical: base=12GB + 10*7.75GB ≈ 90GB)
+                "gradient_accumulation_steps": 13,  # Adjusted to maintain ~global batch size (10*13=130≈128)
+                "seq_length": 1536,
                 "tokens_per_parameter_ratio": 20.0,
                 "total_training_tokens": 10000000000,  # 10B tokens
                 "learning_rate": 0.001,

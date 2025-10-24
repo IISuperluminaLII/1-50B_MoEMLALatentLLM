@@ -83,3 +83,6 @@ tests/temp/
 tmp/
 temp/
 *.tmp
+
+# Documentation info files
+Infos/
