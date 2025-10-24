@@ -366,6 +366,9 @@ class WikipediaTrainer:
         elif isinstance(outputs, dict) and "load_balance_loss" in outputs:
             metrics["load_balance_loss"] = outputs["load_balance_loss"].item()
 
+        # CRITICAL: Delete outputs to prevent keeping references
+        del outputs
+
         return loss, metrics
 
     def train(self, resume_from: Optional[str] = None):
@@ -421,9 +424,12 @@ class WikipediaTrainer:
 
                 accumulated_loss += metrics["loss"] / gradient_accumulation_steps
 
-                # Accumulate metrics
+                # Accumulate metrics (already detached from .item() call)
                 for k, v in metrics.items():
                     step_metrics[k] = step_metrics.get(k, 0) + v / gradient_accumulation_steps
+
+                # CRITICAL: Delete batch and loss to prevent memory leak
+                del batch, loss, scaled_loss
 
             # Gradient clipping
             if self.config["training"]["grad_clip"] > 0:
@@ -435,9 +441,13 @@ class WikipediaTrainer:
             # Optimizer step
             self.optimizer.step()
             self.scheduler.step()
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)  # set_to_none=True saves memory
 
             self.global_step += 1
+
+            # Clear unused tensors after optimizer step
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
 
             # Update progress bar
             progress_bar.update(1)
@@ -454,9 +464,10 @@ class WikipediaTrainer:
                     f"LR: {self.scheduler.get_last_lr()[0]:.2e}"
                 )
 
+                # Store history without keeping tensor references
                 self.training_history.append({
                     "step": self.global_step,
-                    **step_metrics,
+                    **step_metrics,  # Already .item() detached
                     "lr": self.scheduler.get_last_lr()[0],
                 })
 
@@ -464,6 +475,8 @@ class WikipediaTrainer:
             if (step + 1) % eval_interval == 0:
                 eval_metrics = self.evaluate()
                 logger.info(f"Evaluation at step {step + 1}: {eval_metrics}")
+                # Delete eval metrics after logging to prevent accumulation
+                del eval_metrics
 
             # Save checkpoint
             if (step + 1) % save_interval == 0:
@@ -523,6 +536,13 @@ class WikipediaTrainer:
 
                 eval_loss += loss_value
                 eval_steps += 1
+
+                # CRITICAL: Delete batch and outputs to prevent memory leak in eval loop
+                del batch, outputs
+
+            # Clear cache after evaluation
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
 
         self.model.train()
 

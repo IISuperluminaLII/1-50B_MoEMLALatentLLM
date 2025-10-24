@@ -320,7 +320,13 @@ class SanitizedWikipediaDataset(IterableDataset):
 
                 yield tokens
 
+                # CRITICAL: Delete tokens after yielding to prevent memory accumulation
+                del tokens
+
             articles_processed += 1
+
+            # Clean up text references
+            del sanitized_text, text
 
             # Log progress periodically
             if articles_processed % 100 == 0:
@@ -367,6 +373,7 @@ def create_wikipedia_dataloader(
 
     # Create dataloader
     # Note: num_workers=0 for IterableDataset to avoid issues on Windows
+    # Note: Using default collate_fn - PyTorch's default_collate already handles this efficiently
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
