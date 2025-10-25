@@ -4,13 +4,20 @@ Unified Wikipedia training script for DeepSeek-V3.
 
 Supports both CPU and GPU training with sanitized Wikipedia data.
 Optimized for testing with 5M parameter models and Hiroshima prompt.
+Includes DeepSpeed support for memory-efficient training.
 
 Usage:
-    # CPU training
-    python scripts/train_wikipedia_unified.py --config configs/deepseek_v3_cpu_wikipedia.json --device cpu
-
-    # GPU training
+    # GPU training with DeepSpeed (default: single-gpu mode with ZeRO-2 + CPU offload)
     python scripts/train_wikipedia_unified.py --config configs/deepseek_v3_gpu_wikipedia.json --device cuda
+
+    # GPU training with DeepSpeed in multi-GPU mode (ZeRO-3)
+    python scripts/train_wikipedia_unified.py --config configs/deepseek_v3_gpu_wikipedia.json --device cuda --deepspeed multi-gpu
+
+    # GPU training WITHOUT DeepSpeed
+    python scripts/train_wikipedia_unified.py --config configs/deepseek_v3_gpu_wikipedia.json --device cuda --deepspeed disabled
+
+    # CPU training (DeepSpeed not recommended for CPU)
+    python scripts/train_wikipedia_unified.py --config configs/deepseek_v3_cpu_wikipedia.json --device cpu --deepspeed disabled
 
     # Auto-detect device
     python scripts/train_wikipedia_unified.py --config configs/deepseek_v3_cpu_wikipedia.json --device auto
@@ -30,6 +37,13 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from transformers import AutoTokenizer
 import logging
 from tqdm import tqdm
+
+try:
+    import deepspeed
+    DEEPSPEED_AVAILABLE = True
+except ImportError:
+    DEEPSPEED_AVAILABLE = False
+    print("Warning: DeepSpeed not available. Install with: pip install deepspeed")
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -61,6 +75,8 @@ class WikipediaTrainer:
         config_path: str,
         device: str = "auto",
         checkpoint_dir: Optional[str] = None,
+        deepspeed_mode: str = "disabled",
+        local_rank: int = -1,
     ):
         """
         Initialize trainer.
@@ -69,9 +85,14 @@ class WikipediaTrainer:
             config_path: Path to JSON configuration
             device: Device to use ("cpu", "cuda", or "auto")
             checkpoint_dir: Directory for checkpoints
+            deepspeed_mode: DeepSpeed mode ("disabled", "single-gpu", "multi-gpu")
+            local_rank: Local rank for distributed training
         """
         self.config_path = config_path
         self.config = self._load_config(config_path)
+        self.deepspeed_mode = deepspeed_mode
+        self.local_rank = local_rank
+        self.use_deepspeed = deepspeed_mode != "disabled"
 
         # Setup device
         if device == "auto":
@@ -96,11 +117,22 @@ class WikipediaTrainer:
         self.scheduler = None
         self.dataloader = None
         self.tokenizer = None
+        self.model_engine = None  # DeepSpeed engine (if enabled)
 
         # Training state
         self.global_step = 0
         self.best_loss = float('inf')
         self.training_history = []
+
+        # DeepSpeed config path
+        if self.use_deepspeed:
+            if not DEEPSPEED_AVAILABLE:
+                raise ImportError("DeepSpeed is not available. Install with: pip install deepspeed")
+            if deepspeed_mode == "single-gpu":
+                self.deepspeed_config_path = "configs/deepspeed_config_gpu_single.json"
+            elif deepspeed_mode == "multi-gpu":
+                self.deepspeed_config_path = "configs/deepspeed_config_gpu_multi.json"
+            logger.info(f"DeepSpeed enabled with mode: {deepspeed_mode}, config: {self.deepspeed_config_path}")
 
         # TensorBoard writer
         self.tensorboard_writer = None
@@ -363,6 +395,49 @@ class WikipediaTrainer:
 
         logger.info("Optimizer and scheduler initialized")
 
+    def initialize_deepspeed(self):
+        """Initialize DeepSpeed engine."""
+        if not self.use_deepspeed:
+            return
+
+        logger.info("Initializing DeepSpeed engine...")
+
+        # Load DeepSpeed config
+        with open(self.deepspeed_config_path, 'r') as f:
+            ds_config = json.load(f)
+
+        # Update DeepSpeed config with training parameters
+        ds_config["train_batch_size"] = self.config["training"]["global_batch_size"]
+        ds_config["train_micro_batch_size_per_gpu"] = self.config["training"]["micro_batch_size"]
+        ds_config["gradient_accumulation_steps"] = self.config["training"]["gradient_accumulation_steps"]
+        ds_config["gradient_clipping"] = self.config["training"]["grad_clip"]
+
+        # Update optimizer params
+        if "optimizer" in ds_config:
+            ds_config["optimizer"]["params"]["lr"] = self.config["training"]["learning_rate"]
+            ds_config["optimizer"]["params"]["betas"] = [
+                self.config["training"]["adam_beta1"],
+                self.config["training"]["adam_beta2"]
+            ]
+            ds_config["optimizer"]["params"]["eps"] = self.config["training"]["adam_eps"]
+            ds_config["optimizer"]["params"]["weight_decay"] = self.config["training"]["weight_decay"]
+
+        # Update scheduler params
+        if "scheduler" in ds_config:
+            ds_config["scheduler"]["params"]["warmup_min_lr"] = self.config["training"]["min_learning_rate"]
+            ds_config["scheduler"]["params"]["warmup_max_lr"] = self.config["training"]["learning_rate"]
+            ds_config["scheduler"]["params"]["warmup_num_steps"] = self.config["training"]["lr_warmup_steps"]
+            ds_config["scheduler"]["params"]["total_num_steps"] = self.config["training"]["train_steps"]
+
+        # Initialize DeepSpeed
+        self.model_engine, self.optimizer, _, self.scheduler = deepspeed.initialize(
+            model=self.model,
+            model_parameters=self.model.parameters(),
+            config=ds_config,
+        )
+
+        logger.info(f"DeepSpeed engine initialized with ZeRO stage {ds_config['zero_optimization']['stage']}")
+
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Tuple[float, Dict[str, float]]:
         """Single training step."""
         # Move batch to device
@@ -371,12 +446,20 @@ class WikipediaTrainer:
         batch = {k: v.to(self.device) for k, v in batch.items()}
         del old_batch
 
-        # Forward pass
-        outputs = self.model(
-            input_ids=batch["input_ids"],
-            labels=batch["labels"],
-            attention_mask=batch["attention_mask"],
-        )
+        if self.use_deepspeed:
+            # DeepSpeed forward pass
+            outputs = self.model_engine(
+                input_ids=batch["input_ids"],
+                labels=batch["labels"],
+                attention_mask=batch["attention_mask"],
+            )
+        else:
+            # Standard forward pass
+            outputs = self.model(
+                input_ids=batch["input_ids"],
+                labels=batch["labels"],
+                attention_mask=batch["attention_mask"],
+            )
 
         # Handle both dict and namedtuple/object outputs
         if hasattr(outputs, 'loss'):
@@ -414,6 +497,10 @@ class WikipediaTrainer:
         self.setup_optimizer()
         self.setup_data()
 
+        # Initialize DeepSpeed if enabled
+        if self.use_deepspeed:
+            self.initialize_deepspeed()
+
         # Resume if needed
         if resume_from:
             self.load_checkpoint(resume_from)
@@ -430,7 +517,10 @@ class WikipediaTrainer:
             clear_cache_interval = self.config.get("memory_optimization", {}).get("clear_cache_interval", 50)
 
         # Training loop
-        self.model.train()
+        if self.use_deepspeed:
+            self.model_engine.train()
+        else:
+            self.model.train()
         accumulated_loss = 0.0
         data_iter = iter(self.dataloader)
 
@@ -454,9 +544,14 @@ class WikipediaTrainer:
                 # Forward pass
                 loss, metrics = self.train_step(batch)
 
-                # Scale loss for gradient accumulation
-                scaled_loss = loss / gradient_accumulation_steps
-                scaled_loss.backward()
+                if self.use_deepspeed:
+                    # DeepSpeed handles gradient accumulation automatically
+                    self.model_engine.backward(loss)
+                else:
+                    # Scale loss for gradient accumulation
+                    scaled_loss = loss / gradient_accumulation_steps
+                    scaled_loss.backward()
+                    del scaled_loss
 
                 accumulated_loss += metrics["loss"] / gradient_accumulation_steps
 
@@ -465,19 +560,23 @@ class WikipediaTrainer:
                     step_metrics[k] = step_metrics.get(k, 0) + v / gradient_accumulation_steps
 
                 # CRITICAL: Delete batch and loss to prevent memory leak
-                del batch, loss, scaled_loss
+                del batch, loss
 
-            # Gradient clipping
-            if self.config["training"]["grad_clip"] > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config["training"]["grad_clip"],
-                )
+            if self.use_deepspeed:
+                # DeepSpeed handles gradient clipping, optimizer step, and scheduler automatically
+                self.model_engine.step()
+            else:
+                # Gradient clipping
+                if self.config["training"]["grad_clip"] > 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config["training"]["grad_clip"],
+                    )
 
-            # Optimizer step
-            self.optimizer.step()
-            self.scheduler.step()
-            self.optimizer.zero_grad(set_to_none=True)  # set_to_none=True saves memory
+                # Optimizer step
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad(set_to_none=True)  # set_to_none=True saves memory
 
             self.global_step += 1
 
@@ -572,7 +671,11 @@ class WikipediaTrainer:
         """Evaluate model on validation set."""
         logger.info("Running evaluation...")
 
-        self.model.eval()
+        if self.use_deepspeed:
+            self.model_engine.eval()
+        else:
+            self.model.eval()
+
         eval_loss = 0.0
         eval_steps = 0
         max_eval_steps = self.config["validation"]["eval_samples"]
@@ -591,11 +694,18 @@ class WikipediaTrainer:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
                 del old_batch
 
-                outputs = self.model(
-                    input_ids=batch["input_ids"],
-                    labels=batch["labels"],
-                    attention_mask=batch["attention_mask"],
-                )
+                if self.use_deepspeed:
+                    outputs = self.model_engine(
+                        input_ids=batch["input_ids"],
+                        labels=batch["labels"],
+                        attention_mask=batch["attention_mask"],
+                    )
+                else:
+                    outputs = self.model(
+                        input_ids=batch["input_ids"],
+                        labels=batch["labels"],
+                        attention_mask=batch["attention_mask"],
+                    )
 
                 # Handle both dict and namedtuple/object outputs
                 if hasattr(outputs, 'loss'):
@@ -615,7 +725,10 @@ class WikipediaTrainer:
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
 
-        self.model.train()
+        if self.use_deepspeed:
+            self.model_engine.train()
+        else:
+            self.model.train()
 
         if eval_steps > 0:
             avg_loss = eval_loss / eval_steps
@@ -631,36 +744,72 @@ class WikipediaTrainer:
 
     def save_checkpoint(self, suffix: str = ""):
         """Save model checkpoint."""
-        checkpoint_name = f"checkpoint_{suffix}.pt" if suffix else "checkpoint.pt"
-        checkpoint_path = self.checkpoint_dir / checkpoint_name
+        if self.use_deepspeed:
+            # DeepSpeed saves checkpoints differently
+            checkpoint_dir = self.checkpoint_dir / f"checkpoint_{suffix}"
+            logger.info(f"Saving DeepSpeed checkpoint to {checkpoint_dir}")
+            self.model_engine.save_checkpoint(str(self.checkpoint_dir), tag=suffix)
 
-        logger.info(f"Saving checkpoint to {checkpoint_path}")
+            # Save additional training state
+            state_path = checkpoint_dir / "trainer_state.pt"
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            trainer_state = {
+                "global_step": self.global_step,
+                "config": self.config,
+                "training_history": self.training_history,
+            }
+            torch.save(trainer_state, state_path)
+            logger.info(f"Checkpoint saved: {checkpoint_dir}")
+        else:
+            checkpoint_name = f"checkpoint_{suffix}.pt" if suffix else "checkpoint.pt"
+            checkpoint_path = self.checkpoint_dir / checkpoint_name
 
-        checkpoint = {
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict(),
-            "global_step": self.global_step,
-            "config": self.config,
-            "training_history": self.training_history,
-        }
+            logger.info(f"Saving checkpoint to {checkpoint_path}")
 
-        torch.save(checkpoint, checkpoint_path)
-        logger.info(f"Checkpoint saved: {checkpoint_path}")
+            checkpoint = {
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "scheduler_state_dict": self.scheduler.state_dict(),
+                "global_step": self.global_step,
+                "config": self.config,
+                "training_history": self.training_history,
+            }
+
+            torch.save(checkpoint, checkpoint_path)
+            logger.info(f"Checkpoint saved: {checkpoint_path}")
 
     def load_checkpoint(self, checkpoint_path: str):
         """Load model checkpoint."""
         logger.info(f"Loading checkpoint from {checkpoint_path}")
 
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        if self.use_deepspeed:
+            # DeepSpeed load
+            checkpoint_dir = Path(checkpoint_path)
+            if checkpoint_dir.is_file():
+                # If a file is provided, assume it's the parent directory
+                checkpoint_dir = checkpoint_dir.parent
 
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        self.global_step = checkpoint["global_step"]
-        self.training_history = checkpoint.get("training_history", [])
+            # Load DeepSpeed checkpoint
+            _, client_state = self.model_engine.load_checkpoint(str(checkpoint_dir.parent), tag=checkpoint_dir.name)
 
-        logger.info(f"Resumed from step {self.global_step}")
+            # Load additional trainer state
+            state_path = checkpoint_dir / "trainer_state.pt"
+            if state_path.exists():
+                trainer_state = torch.load(state_path, map_location=self.device)
+                self.global_step = trainer_state["global_step"]
+                self.training_history = trainer_state.get("training_history", [])
+
+            logger.info(f"Resumed from step {self.global_step}")
+        else:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            self.global_step = checkpoint["global_step"]
+            self.training_history = checkpoint.get("training_history", [])
+
+            logger.info(f"Resumed from step {self.global_step}")
 
 
 def main():
@@ -691,6 +840,19 @@ def main():
         default=None,
         help="Directory to save checkpoints",
     )
+    parser.add_argument(
+        "--deepspeed",
+        type=str,
+        default="single-gpu",
+        choices=["disabled", "single-gpu", "multi-gpu"],
+        help="DeepSpeed mode: disabled, single-gpu (ZeRO-2 + CPU offload), or multi-gpu (ZeRO-3)",
+    )
+    parser.add_argument(
+        "--local_rank",
+        type=int,
+        default=-1,
+        help="Local rank for distributed training (set by DeepSpeed launcher)",
+    )
 
     args = parser.parse_args()
 
@@ -704,6 +866,8 @@ def main():
         config_path=args.config,
         device=args.device,
         checkpoint_dir=args.checkpoint_dir,
+        deepspeed_mode=args.deepspeed,
+        local_rank=args.local_rank,
     )
 
     # Start training

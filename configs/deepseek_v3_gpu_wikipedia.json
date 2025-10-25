@@ -117,12 +117,13 @@
     "pipeline_parallel_size": 1,
     "expert_parallel_size": 1,
     "data_parallel_size": 1,
-    "zero_stage": 0,
-    "zero_offload": false,
-    "overlap_grad_reduce": false,
-    "overlap_param_gather": false,
+    "zero_stage": 2,
+    "zero_offload": true,
+    "overlap_grad_reduce": true,
+    "overlap_param_gather": true,
     "deepspeed": {
-      "enabled": false
+      "enabled": true,
+      "config_file": "configs/deepspeed_config_gpu_single.json"
     }
   },
   "checkpointing": {
