@@ -294,8 +294,9 @@ class DataPipeline:
 
         if str(path) in known_hf_datasets:
             # Load from HuggingFace
+            # CRITICAL FIX #28: Add keep_in_memory=False for memory-mapped access
             from datasets import load_dataset
-            dataset = load_dataset(str(path), split="train", streaming=True)
+            dataset = load_dataset(str(path), split="train", streaming=True, keep_in_memory=False)
             for example in dataset:
                 yield {"text": example.get("text", ""), "id": example.get("id", None)}
             return

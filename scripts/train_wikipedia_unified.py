@@ -43,6 +43,11 @@ from src.data.wikipedia_loader import (
 )
 from src.data.wikipedia_sanitizer import SanitizationConfig
 
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_AVAILABLE = True
+except ImportError:
+    TENSORBOARD_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -96,6 +101,30 @@ class WikipediaTrainer:
         self.global_step = 0
         self.best_loss = float('inf')
         self.training_history = []
+
+        # TensorBoard writer
+        self.tensorboard_writer = None
+        tb_enabled = self.config.get("logging", {}).get("tensorboard", {}).get("enabled", False)
+        print(f"\n[DEBUG] TensorBoard enabled in config: {tb_enabled}")
+        print(f"[DEBUG] TensorBoard available: {TENSORBOARD_AVAILABLE}")
+
+        if tb_enabled:
+            if TENSORBOARD_AVAILABLE:
+                # Check for custom tensorboard_dir in config, otherwise use default
+                custom_tb_dir = self.config.get("logging", {}).get("tensorboard_dir")
+                if custom_tb_dir:
+                    tensorboard_dir = Path(custom_tb_dir)
+                else:
+                    tensorboard_dir = self.checkpoint_dir / "tensorboard"
+                tensorboard_dir.mkdir(parents=True, exist_ok=True)
+                self.tensorboard_writer = SummaryWriter(str(tensorboard_dir))
+                print(f"✓ [TENSORBOARD] Logging enabled at {tensorboard_dir}\n")
+                logger.info(f"TensorBoard logging enabled at {tensorboard_dir}")
+            else:
+                print("✗ [TENSORBOARD] Requested but not available!\n")
+                logger.warning("TensorBoard requested but not available")
+        else:
+            print("✗ [TENSORBOARD] Disabled in config\n")
 
     def _load_config(self, config_path: str) -> Dict:
         """Load configuration from JSON file."""
@@ -278,11 +307,12 @@ class WikipediaTrainer:
         )
 
         # Create dataloader
+        # CRITICAL: Always use CPU for data loading to prevent GPU memory explosion
         self.dataloader = create_wikipedia_dataloader(
             tokenizer=self.tokenizer,
             config=wiki_config,
             batch_size=self.config["training"]["micro_batch_size"],
-            device=self.device.type,
+            device="cpu",  # ALWAYS CPU for data loading!
             num_workers=self.config["data"]["preprocessing"]["num_workers"],
             vocab_size_limit=self._vocab_size_limit,
         )
@@ -336,7 +366,10 @@ class WikipediaTrainer:
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Tuple[float, Dict[str, float]]:
         """Single training step."""
         # Move batch to device
+        # CRITICAL FIX: Delete old batch reference before overwriting
+        old_batch = batch
         batch = {k: v.to(self.device) for k, v in batch.items()}
+        del old_batch
 
         # Forward pass
         outputs = self.model(
@@ -412,7 +445,10 @@ class WikipediaTrainer:
                     batch = next(data_iter)
                 except StopIteration:
                     # Restart data loader
+                    # CRITICAL FIX: Delete old iterator before creating new one
+                    old_iter = data_iter
                     data_iter = iter(self.dataloader)
+                    del old_iter
                     batch = next(data_iter)
 
                 # Forward pass
@@ -458,23 +494,50 @@ class WikipediaTrainer:
 
             # Logging
             if (step + 1) % log_interval == 0:
+                current_lr = self.scheduler.get_last_lr()[0]
+
                 logger.info(
                     f"Step {step + 1}/{train_steps} | "
                     f"Loss: {step_metrics['loss']:.4f} | "
-                    f"LR: {self.scheduler.get_last_lr()[0]:.2e}"
+                    f"LR: {current_lr:.2e}"
                 )
 
                 # Store history without keeping tensor references
                 self.training_history.append({
                     "step": self.global_step,
                     **step_metrics,  # Already .item() detached
-                    "lr": self.scheduler.get_last_lr()[0],
+                    "lr": current_lr,
                 })
+
+                # TensorBoard logging
+                if self.tensorboard_writer is not None:
+                    self.tensorboard_writer.add_scalar("train/loss", step_metrics['loss'], self.global_step)
+                    self.tensorboard_writer.add_scalar("train/learning_rate", current_lr, self.global_step)
+
+                    # Log MoE metrics if available
+                    if "aux_loss" in step_metrics:
+                        self.tensorboard_writer.add_scalar("train/aux_loss", step_metrics['aux_loss'], self.global_step)
+                    if "load_balance_loss" in step_metrics:
+                        self.tensorboard_writer.add_scalar("train/load_balance_loss", step_metrics['load_balance_loss'], self.global_step)
+
+                    # Log GPU memory
+                    if self.device.type == "cuda":
+                        self.tensorboard_writer.add_scalar("performance/gpu_memory_gb", torch.cuda.memory_allocated() / 1024**3, self.global_step)
+
+                    # Flush to ensure data is written to disk
+                    self.tensorboard_writer.flush()
 
             # Evaluation
             if (step + 1) % eval_interval == 0:
                 eval_metrics = self.evaluate()
                 logger.info(f"Evaluation at step {step + 1}: {eval_metrics}")
+
+                # TensorBoard logging for eval metrics
+                if self.tensorboard_writer is not None:
+                    for key, value in eval_metrics.items():
+                        if isinstance(value, (int, float)):
+                            self.tensorboard_writer.add_scalar(f"eval/{key}", value, self.global_step)
+
                 # Delete eval metrics after logging to prevent accumulation
                 del eval_metrics
 
@@ -497,6 +560,11 @@ class WikipediaTrainer:
         progress_bar.close()
         logger.info("Training completed!")
 
+        # Close TensorBoard writer
+        if self.tensorboard_writer is not None:
+            self.tensorboard_writer.close()
+            logger.info("TensorBoard writer closed")
+
         # Save final checkpoint
         self.save_checkpoint("final")
 
@@ -518,7 +586,10 @@ class WikipediaTrainer:
                 except StopIteration:
                     break
 
+                # CRITICAL FIX: Delete old batch reference before overwriting
+                old_batch = batch
                 batch = {k: v.to(self.device) for k, v in batch.items()}
+                del old_batch
 
                 outputs = self.model(
                     input_ids=batch["input_ids"],
