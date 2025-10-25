@@ -6,6 +6,14 @@ from .mla import MLAAttention, RMSNorm
 from ..moe.deepseek_moe import DeepSeekMoE, MoEOutput
 from .mtp import MTPHead
 
+# Try to import FlashMLA wrapper and check if flash_mla is actually available
+try:
+    from ..mla.flash_mla_wrapper import MultiHeadLatentAttention as FlashMLAAttention, FLASH_MLA_AVAILABLE
+    # FLASH_MLA_AVAILABLE is set by the wrapper based on whether flash_mla imported successfully
+except ImportError:
+    FLASH_MLA_AVAILABLE = False
+    FlashMLAAttention = None
+
 class MLAOnlyBlock(nn.Module):
     """
     Attention-dense block with only MLA (no MoE).
@@ -22,17 +30,33 @@ class MLAOnlyBlock(nn.Module):
         use_fp8_kv=False,
         max_context_length=128000,
         rope_base=10000.0,
+        use_flash_mla=False,
+        num_kv_heads=None,
     ):
         super().__init__()
-        self.mla = MLAAttention(
-            d_model,
-            num_heads,
-            d_latent=d_latent,
-            dropout=attn_dropout,
-            use_fp8_kv=use_fp8_kv,
-            max_context_length=max_context_length,
-            rope_base=rope_base,
-        )
+
+        # Use FlashMLA if requested and available, otherwise fall back to standard MLA
+        if use_flash_mla and FLASH_MLA_AVAILABLE:
+            self.mla = FlashMLAAttention(
+                d_model=d_model,
+                d_latent=d_latent if d_latent is not None else max(d_model // 4, 128),
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                use_fp8_kv=use_fp8_kv,
+                use_flash_mla=True,
+                max_context_length=max_context_length,
+                rope_theta=rope_base,
+            )
+        else:
+            self.mla = MLAAttention(
+                d_model,
+                num_heads,
+                d_latent=d_latent,
+                dropout=attn_dropout,
+                use_fp8_kv=use_fp8_kv,
+                max_context_length=max_context_length,
+                rope_base=rope_base,
+            )
         self.norm1 = RMSNorm(d_model, eps=norm_eps)
 
         # Dense FFN (standard 4x expansion)
@@ -82,17 +106,33 @@ class MLAPlusMoEBlock(nn.Module):
         use_fp8_kv=False,
         max_context_length=128000,
         rope_base=10000.0,
+        use_flash_mla=False,
+        num_kv_heads=None,
     ):
         super().__init__()
-        self.mla = MLAAttention(
-            d_model,
-            num_heads,
-            d_latent=d_latent,
-            dropout=attn_dropout,
-            use_fp8_kv=use_fp8_kv,
-            max_context_length=max_context_length,
-            rope_base=rope_base,
-        )
+
+        # Use FlashMLA if requested and available, otherwise fall back to standard MLA
+        if use_flash_mla and FLASH_MLA_AVAILABLE:
+            self.mla = FlashMLAAttention(
+                d_model=d_model,
+                d_latent=d_latent if d_latent is not None else max(d_model // 4, 128),
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                use_fp8_kv=use_fp8_kv,
+                use_flash_mla=True,
+                max_context_length=max_context_length,
+                rope_theta=rope_base,
+            )
+        else:
+            self.mla = MLAAttention(
+                d_model,
+                num_heads,
+                d_latent=d_latent,
+                dropout=attn_dropout,
+                use_fp8_kv=use_fp8_kv,
+                max_context_length=max_context_length,
+                rope_base=rope_base,
+            )
         self.norm1 = RMSNorm(d_model, eps=norm_eps)
 
         # DeepSeekMoE with full config support (aux-loss-free, DeepEP, shared experts)
@@ -177,6 +217,8 @@ class DeepSeekV3Model(nn.Module):
                     use_fp8_kv=getattr(config.mla, 'use_fp8_kv', False),
                     max_context_length=getattr(config.mla, 'max_context_length', 128000),
                     rope_base=getattr(config.mla, 'rope_theta', 10000.0),
+                    use_flash_mla=getattr(config.mla, 'use_flash_mla', False),
+                    num_kv_heads=getattr(config.mla, 'num_kv_heads', None),
                 )
             else:
                 block = MLAPlusMoEBlock(
@@ -194,6 +236,8 @@ class DeepSeekV3Model(nn.Module):
                     use_fp8_kv=getattr(config.mla, 'use_fp8_kv', False),
                     max_context_length=getattr(config.mla, 'max_context_length', 128000),
                     rope_base=getattr(config.mla, 'rope_theta', 10000.0),
+                    use_flash_mla=getattr(config.mla, 'use_flash_mla', False),
+                    num_kv_heads=getattr(config.mla, 'num_kv_heads', None),
                 )
 
                 # Override MoE config with full DeepSeekMoE settings

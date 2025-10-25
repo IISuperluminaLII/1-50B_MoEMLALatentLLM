@@ -103,7 +103,7 @@ class TestFast500KCustomTokenizer:
             tokenizer=custom_wikipedia_tokenizer,  # Use custom tokenizer
             config=wiki_config,
             batch_size=config["training"]["micro_batch_size"],
-            device=trainer.device.type,
+            device="cpu",  # ALWAYS CPU for data loading!
             num_workers=config["data"]["preprocessing"]["num_workers"],
             vocab_size_limit=None,  # No clamping needed
         )

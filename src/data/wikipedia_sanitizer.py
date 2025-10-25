@@ -64,16 +64,28 @@ class WikipediaSanitizer:
     7. Content safety filtering
     """
 
-    def __init__(self, config: Optional[SanitizationConfig] = None):
-        """Initialize sanitizer with configuration."""
-        self.config = config or SanitizationConfig()
+    def __init__(self, config: Optional[SanitizationConfig] = None, enable_dedup: bool = True):
+        """
+        Initialize sanitizer with configuration.
 
-        # Initialize deduplication LSH
-        self.lsh = MinHashLSH(
-            threshold=self.config.dedup_threshold,
-            num_perm=self.config.dedup_num_perm
-        )
-        self.seen_hashes = set()
+        Args:
+            config: Sanitization configuration
+            enable_dedup: Enable deduplication (CRITICAL: disable in multi-worker mode!)
+        """
+        self.config = config or SanitizationConfig()
+        self.enable_dedup = enable_dedup
+
+        # Initialize deduplication LSH (CRITICAL FIX: only if enabled)
+        # In multi-worker mode, each worker would build its own LSH index = massive memory waste
+        if self.enable_dedup:
+            self.lsh = MinHashLSH(
+                threshold=self.config.dedup_threshold,
+                num_perm=self.config.dedup_num_perm
+            )
+            self.seen_hashes = set()
+        else:
+            self.lsh = None
+            self.seen_hashes = None
 
         # Boilerplate patterns
         self.boilerplate_patterns = [
@@ -97,12 +109,22 @@ class WikipediaSanitizer:
             re.IGNORECASE | re.DOTALL
         )
 
+        # Pre-compile ALL regex patterns used throughout sanitization
+        self.html_tag_regex = re.compile(r'<[^>]+>')
+        self.whitespace_regex = re.compile(r'\s+')
+        self.references_regex = re.compile(r'==\s*References\s*==.*', re.DOTALL | re.IGNORECASE)
+        self.bibliography_regex = re.compile(r'==\s*Bibliography\s*==.*', re.DOTALL | re.IGNORECASE)
+        self.sources_regex = re.compile(r'==\s*Sources\s*==.*', re.DOTALL | re.IGNORECASE)
+        self.sentence_split_regex = re.compile(r'[.!?]+')
+        self.punctuation_regex = re.compile(r'[.!?,;:]')
+        self.special_char_regex = re.compile(r'[^a-zA-Z0-9\s.!?,;:\'\"-]')
+
         # Statistics tracking
         self.stats = defaultdict(int)
 
     def sanitize(self, text: str, article_id: Optional[str] = None) -> Optional[str]:
         """
-        Apply full sanitization pipeline to text.
+        Apply full sanitization pipeline to text with early-exit optimizations.
 
         Args:
             text: Raw Wikipedia article text
@@ -113,20 +135,27 @@ class WikipediaSanitizer:
         """
         self.stats['total'] += 1
 
+        # FAST PRE-CHECK: Quick length check before expensive cleaning
+        # Reject obviously too-short or too-long articles BEFORE cleaning
+        word_estimate = len(text.split())
+        if word_estimate < self.config.min_article_length or word_estimate > self.config.max_article_length * 1.5:
+            self.stats['invalid_length'] += 1
+            return None
+
         # Stage 1: Preliminary cleaning
         text = self._preliminary_clean(text)
-        if not text:
+        if not text or len(text) < 50:  # Early exit if cleaning left nothing
             self.stats['empty_after_cleaning'] += 1
             return None
 
-        # Stage 2: Language detection
-        if not self._check_language(text):
-            self.stats['wrong_language'] += 1
-            return None
-
-        # Stage 3: Length validation
+        # Stage 2: Length validation (after cleaning)
         if not self._check_length(text):
             self.stats['invalid_length'] += 1
+            return None
+
+        # Stage 3: Language detection (expensive - do after length check)
+        if not self._check_language(text):
+            self.stats['wrong_language'] += 1
             return None
 
         # Stage 4: Quality check
@@ -139,8 +168,8 @@ class WikipediaSanitizer:
             self.stats['too_repetitive'] += 1
             return None
 
-        # Stage 6: Deduplication
-        if article_id and not self._check_duplicate(text, article_id):
+        # Stage 6: Deduplication (CRITICAL FIX: skip if disabled in multi-worker mode)
+        if self.enable_dedup and article_id and not self._check_duplicate(text, article_id):
             self.stats['duplicate'] += 1
             return None
 
@@ -153,22 +182,22 @@ class WikipediaSanitizer:
         return text
 
     def _preliminary_clean(self, text: str) -> str:
-        """Remove HTML, markdown, and Wikipedia markup."""
-        # Remove HTML tags
-        text = re.sub(r'<[^>]+>', '', text)
+        """Remove HTML, markdown, and Wikipedia markup using pre-compiled patterns."""
+        # Remove HTML tags (pre-compiled)
+        text = self.html_tag_regex.sub('', text)
 
-        # Remove Wikipedia markup if configured
+        # Remove Wikipedia markup if configured (pre-compiled)
         if self.config.filter_boilerplate:
             text = self.boilerplate_regex.sub('', text)
 
-        # Remove references section if configured
+        # Remove references section if configured (pre-compiled)
         if self.config.remove_references:
-            text = re.sub(r'==\s*References\s*==.*', '', text, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r'==\s*Bibliography\s*==.*', '', text, flags=re.DOTALL | re.IGNORECASE)
-            text = re.sub(r'==\s*Sources\s*==.*', '', text, flags=re.DOTALL | re.IGNORECASE)
+            text = self.references_regex.sub('', text)
+            text = self.bibliography_regex.sub('', text)
+            text = self.sources_regex.sub('', text)
 
-        # Remove multiple spaces and normalize whitespace
-        text = re.sub(r'\s+', ' ', text)
+        # Remove multiple spaces and normalize whitespace (pre-compiled)
+        text = self.whitespace_regex.sub(' ', text)
         text = text.strip()
 
         # Normalize unicode
@@ -177,23 +206,41 @@ class WikipediaSanitizer:
         return text
 
     def _check_language(self, text: str) -> bool:
-        """Verify text is in target language with high confidence."""
+        """
+        Verify text is in target language with high confidence.
+        OPTIMIZED: Uses smaller sample and single-language detection for speed.
+        """
         try:
-            # Take sample for language detection (first 500 chars)
-            sample = text[:500] if len(text) > 500 else text
+            # OPTIMIZATION: Use smaller sample (200 chars instead of 500)
+            # Language is usually detectable from first few sentences
+            sample_size = min(200, len(text))
+            sample = text[:sample_size]
 
-            # Detect language
-            detected = langdetect.detect_langs(sample)
-
-            if not detected:
+            # Skip if sample is too short
+            if len(sample) < 50:
                 return False
 
-            # Check if target language has high enough confidence
-            for lang in detected:
-                if lang.lang == self.config.target_language:
-                    return lang.prob >= self.config.min_language_confidence
+            # OPTIMIZATION: Use detect() instead of detect_langs() when we only need top language
+            # This is faster as it doesn't compute probabilities for all languages
+            detected_lang = langdetect.detect(sample)
 
-            return False
+            if detected_lang != self.config.target_language:
+                return False
+
+            # Only compute detailed probabilities if needed for confidence threshold
+            if self.config.min_language_confidence < 1.0:
+                detected = langdetect.detect_langs(sample)
+                if not detected:
+                    return False
+
+                # Check if target language has high enough confidence
+                for lang in detected:
+                    if lang.lang == self.config.target_language:
+                        return lang.prob >= self.config.min_language_confidence
+
+                return False
+
+            return True
 
         except Exception:
             # If detection fails, assume it's not the target language
@@ -222,7 +269,7 @@ class WikipediaSanitizer:
 
     def _check_quality(self, text: str) -> bool:
         """
-        Check text quality using heuristics.
+        Check text quality using optimized heuristics with pre-compiled patterns.
 
         Quality score based on:
         - Sentence structure
@@ -231,27 +278,37 @@ class WikipediaSanitizer:
         - Special character ratio
         """
         quality_score = 1.0
+        text_len = len(text)
 
-        # Check sentence structure
-        sentences = re.split(r'[.!?]+', text)
-        avg_sentence_length = np.mean([len(s.split()) for s in sentences if s.strip()])
+        # Early exit for empty text
+        if text_len == 0:
+            return False
 
-        # Penalize very short or very long sentences
-        if avg_sentence_length < 5 or avg_sentence_length > 50:
-            quality_score *= 0.8
+        # Check sentence structure (pre-compiled pattern)
+        sentences = self.sentence_split_regex.split(text)
+        sentence_lengths = [len(s.split()) for s in sentences if s.strip()]
+        if sentence_lengths:
+            avg_sentence_length = sum(sentence_lengths) / len(sentence_lengths)
+            # Penalize very short or very long sentences
+            if avg_sentence_length < 5 or avg_sentence_length > 50:
+                quality_score *= 0.8
 
-        # Check punctuation ratio
-        punct_ratio = len(re.findall(r'[.!?,;:]', text)) / len(text.split())
-        if punct_ratio < 0.05 or punct_ratio > 0.3:
-            quality_score *= 0.9
+        # Check punctuation ratio (pre-compiled pattern)
+        words = text.split()
+        if words:
+            punct_count = len(self.punctuation_regex.findall(text))
+            punct_ratio = punct_count / len(words)
+            if punct_ratio < 0.05 or punct_ratio > 0.3:
+                quality_score *= 0.9
 
-        # Check capitalization (should have some but not too much)
-        caps_ratio = sum(1 for c in text if c.isupper()) / len(text)
+        # Check capitalization (vectorized - faster than generator)
+        caps_ratio = sum(1 for c in text if c.isupper()) / text_len
         if caps_ratio < 0.01 or caps_ratio > 0.1:
             quality_score *= 0.9
 
-        # Check special character ratio
-        special_ratio = len(re.findall(r'[^a-zA-Z0-9\s.!?,;:\'\"-]', text)) / len(text)
+        # Check special character ratio (pre-compiled pattern)
+        special_count = len(self.special_char_regex.findall(text))
+        special_ratio = special_count / text_len
         if special_ratio > 0.1:
             quality_score *= 0.8
 

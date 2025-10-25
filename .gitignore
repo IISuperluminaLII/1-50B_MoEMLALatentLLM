@@ -86,3 +86,15 @@ temp/
 
 # Documentation info files
 docs/
+
+# Local audit/restart markdown files (not for version control)
+ABSOLUTE_ZERO_RESTART.md
+COMPLETE_AUDIT_FROM_SCRATCH.md
+CORRECTNESS_AUDIT.md
+EXHAUSTIVE_AUDIT_RESTART.md
+FINAL_COMPLETE_AUDIT.md
+FINAL_CORRECTNESS_SUMMARY.md
+PRODUCTION_CONFIDENCE_SCORE.md
+*_AUDIT*.md
+*_RESTART*.md
+*_CONFIDENCE*.md

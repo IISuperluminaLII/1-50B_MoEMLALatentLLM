@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 from scripts.train_wikipedia_unified import WikipediaTrainer
 from src.data.wikipedia_loader import create_wikipedia_dataloader, WikipediaDataConfig, SanitizationConfig
+from src.data.wikipedia_sanitizer import WikipediaSanitizer
 
 
 class TestWikipediaTraining:
@@ -52,23 +53,45 @@ class TestWikipediaTraining:
 
     @pytest.mark.large
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
-    def test_large_model_500m(self, custom_wikipedia_tokenizer, cleanup_after_test):
+    def test_large_model_500m(self, custom_wikipedia_tokenizer, resume_training, clean_checkpoints):
         """
-        Large-scale test: 400M params (reduced from 500M), 50K vocab, 5000 steps, full Wikipedia.
+        Large-scale test: 500M params, 50K vocab, 5000 steps, full Wikipedia.
 
-        Run with: pytest -m large tests/test_wikipedia_training_suite.py
-        Or: pytest --run-large tests/test_wikipedia_training_suite.py
+        Run with:
+        - Fresh training: pytest tests/test_wikipedia_training_suite.py::TestWikipediaTraining::test_large_model_500m -v
+        - Resume training: pytest tests/test_wikipedia_training_suite.py::TestWikipediaTraining::test_large_model_500m -v --resume
+        - Clean & restart: pytest tests/test_wikipedia_training_suite.py::TestWikipediaTraining::test_large_model_500m -v --clean
 
         Expected time: Several hours
-        Expected VRAM: ~35-40GB
+        Expected VRAM: ~65-70GB
         """
         print("\n" + "="*70)
-        print("LARGE-SCALE TEST: 400M Parameters, 50K Vocab")
+        print("LARGE-SCALE TEST: 500M Parameters, 50K Vocab")
         print("="*70)
         print("WARNING: This test requires significant GPU resources!")
-        print("  - Memory: ~35-40GB VRAM")
+        print("  - Memory: ~65-70GB VRAM")
         print("  - Time: Several hours")
         print("  - Data: Full Wikipedia (6.5M articles)")
+
+        # Handle checkpoint flags (use S: drive location)
+        checkpoint_dir = Path(r"S:\DL+Diffusion Models\LLM\DL\Train_Dataset\LLMs\150BLLM\wikimedia___wikipedia\ckpts")
+
+        if clean_checkpoints:
+            print(f"\n[CLEAN] Removing all checkpoints from {checkpoint_dir}")
+            if checkpoint_dir.exists():
+                import shutil
+                shutil.rmtree(checkpoint_dir)
+                print("[CLEAN] Checkpoints cleaned")
+
+        resume_from = None
+        if resume_training:
+            # Find latest checkpoint
+            resume_from = self._find_latest_checkpoint(checkpoint_dir)
+            if resume_from:
+                print(f"\n[RESUME] Resuming from checkpoint: {resume_from}")
+            else:
+                print("\n[INFO] No checkpoint found, starting fresh training")
+
         print("="*70 + "\n")
 
         # Create large model config
@@ -87,8 +110,8 @@ class TestWikipediaTraining:
             json.dump(config, f, indent=2)
 
         try:
-            # Run training
-            result = self._run_training(config, temp_config_path, large_tokenizer)
+            # Run training (with optional resume)
+            result = self._run_training(config, temp_config_path, large_tokenizer, resume_from=resume_from)
 
             # Verify success
             assert result["success"], "Training failed"
@@ -192,9 +215,17 @@ class TestWikipediaTraining:
 
     def _create_500m_config(self):
         """Create configuration for 500M parameter model (VERIFIED safe size)."""
+        # PERSISTENT checkpoint directory on S: drive (fast SSD with plenty of space)
+        checkpoint_dir = Path(r"S:\DL+Diffusion Models\LLM\DL\Train_Dataset\LLMs\150BLLM\wikimedia___wikipedia\ckpts")
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        # TensorBoard logs in tests/temp/ (local, easy to find and clean)
+        tensorboard_dir = Path(__file__).parent / "temp" / "tensorboard" / "500m_test"
+        tensorboard_dir.mkdir(parents=True, exist_ok=True)
+
         return {
-            "experiment_name": "deepseek_v3_400m_wikipedia",
-            "output_dir": "./test_checkpoints/400m_gpu",
+            "experiment_name": "deepseek_v3_500m_wikipedia",
+            "output_dir": str(checkpoint_dir),
             "seed": 42,
             "model": {
                 "num_layers": 12,  # Significantly reduced
@@ -274,7 +305,7 @@ class TestWikipediaTraining:
             "data": {
                 "dataset_name": "wikimedia/wikipedia",
                 "dataset_version": "20231101.en",
-                "cache_dir": "./test_cache",
+                "cache_dir": r"S:\DL+Diffusion Models\LLM\DL\Train_Dataset\LLMs\150BLLM",  # LOCAL DATASET PATH
                 "sanitization": {
                     "enabled": True,
                     "target_language": "en",
@@ -292,17 +323,17 @@ class TestWikipediaTraining:
                     "remove_references": True
                 },
                 "preprocessing": {
-                    "num_workers": 4,
+                    "num_workers": 0,  # NO WORKERS: Eliminates 550MB GPU overhead per worker (saves 2.2GB GPU memory)
                     "shuffle": True,
                     "shuffle_seed": 42,
-                    "streaming": True,
+                    "streaming": False,  # LOCAL DATASET - NO STREAMING!
                     "buffer_size": 10000,
-                    "prefetch_factor": 4,
-                    "pin_memory": True
+                    "prefetch_factor": None,  # Not used with num_workers=0
+                    "pin_memory": False  # Not beneficial with num_workers=0
                 },
                 "max_articles": None,  # Use full Wikipedia!
                 "focus_historical": True,
-                "boost_hiroshima_content": True
+                "boost_hiroshima_content": False  # Removed boosting
             },
             "distributed": {
                 "backend": "nccl",
@@ -327,12 +358,13 @@ class TestWikipediaTraining:
                 "save_optimizer_states": True
             },
             "logging": {
-                "log_interval": 100,
+                "log_interval": 10,  # Log every 10 steps for faster TensorBoard feedback
+                "tensorboard_dir": str(tensorboard_dir),  # Custom TensorBoard directory in tests/temp/
                 "wandb": {
                     "enabled": False
                 },
                 "tensorboard": {
-                    "enabled": False
+                    "enabled": True  # ENABLED for metric visualization
                 }
             },
             "validation": {
@@ -376,10 +408,27 @@ class TestWikipediaTraining:
             print(f"[OK] Using GPT-2 tokenizer (vocab: {len(tokenizer)})")
             return tokenizer
 
-    def _run_training(self, config, config_path, tokenizer):
+    def _find_latest_checkpoint(self, checkpoint_dir):
+        """Find the latest checkpoint in the directory."""
+        if not checkpoint_dir.exists():
+            return None
+
+        # Look for checkpoint files matching pattern: checkpoint_*.pt
+        checkpoints = list(checkpoint_dir.glob("checkpoint_*.pt"))
+        if not checkpoints:
+            return None
+
+        # Sort by modification time and return latest
+        latest = max(checkpoints, key=lambda p: p.stat().st_mtime)
+        return str(latest)
+
+    def _run_training(self, config, config_path, tokenizer, resume_from=None):
         """Run training and return results."""
-        # Create trainer
+        # Create trainer with config_path - trainer's __init__ will handle TensorBoard setup
         trainer = WikipediaTrainer(config_path)
+
+        # Override config BEFORE calling setup methods
+        # The trainer already initialized TensorBoard with the custom directory from config
         trainer.config = config
 
         # Initialize components
@@ -422,11 +471,15 @@ class TestWikipediaTraining:
             buffer_size=config["data"]["preprocessing"]["buffer_size"],
         )
 
+        # Use PyTorch DataLoader with keep_in_memory=False for memory-mapped access
+        # This allows 16 workers to share the same disk-backed Arrow files without RAM duplication
+        # TF.data pipeline was abandoned due to thread-safety issues with stateful sanitizer
+        # CRITICAL: Always use CPU for data loading to prevent GPU memory explosion
         trainer.dataloader = create_wikipedia_dataloader(
             tokenizer=tokenizer,
             config=wiki_config,
             batch_size=config["training"]["micro_batch_size"],
-            device=trainer.device.type,
+            device="cpu",  # ALWAYS CPU for data loading!
             num_workers=config["data"]["preprocessing"]["num_workers"],
             vocab_size_limit=None,
         )
@@ -437,7 +490,10 @@ class TestWikipediaTraining:
         final_loss = None
 
         try:
-            trainer.train()
+            # Pass resume_from to trainer
+            if resume_from:
+                print(f"\n[RESUME] Loading checkpoint: {resume_from}")
+            trainer.train(resume_from=resume_from)
             training_time = time.time() - start_time
             success = True
             # Get losses from trainer history if available
@@ -445,6 +501,8 @@ class TestWikipediaTraining:
             loss_decreased = True
         except Exception as e:
             print(f"[ERROR] Training failed: {e}")
+            import traceback
+            traceback.print_exc()
             training_time = time.time() - start_time
             success = False
             loss_decreased = False

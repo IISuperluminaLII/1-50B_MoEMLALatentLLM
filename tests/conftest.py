@@ -412,6 +412,22 @@ def pytest_configure(config):
     )
 
 
+def pytest_addoption(parser):
+    """Add custom command-line options for 500M model test."""
+    parser.addoption(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Resume 500M model training from last checkpoint if available"
+    )
+    parser.addoption(
+        "--clean",
+        action="store_true",
+        default=False,
+        help="Clean all checkpoints for 500M model before starting training"
+    )
+
+
 def pytest_collection_modifyitems(config, items):
     """Modify test collection to skip GPU tests if no GPU available."""
     # Skip slow tests by default (unless explicitly requested with -m slow)
@@ -499,3 +515,21 @@ def test_output_dir():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     yield output_dir
+
+
+@pytest.fixture
+def resume_training(request):
+    """
+    Fixture to check if --resume flag was passed for 500M model test.
+    Returns True if training should resume from checkpoint.
+    """
+    return request.config.getoption("--resume")
+
+
+@pytest.fixture
+def clean_checkpoints(request):
+    """
+    Fixture to check if --clean flag was passed for 500M model test.
+    Returns True if all checkpoints should be cleaned before training.
+    """
+    return request.config.getoption("--clean")
