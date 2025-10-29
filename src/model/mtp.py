@@ -92,6 +92,9 @@ class MTPHead(nn.Module):
         # If not provided, create a new one (for backward compatibility)
         self.embedding = embedding_layer if embedding_layer is not None else nn.Embedding(vocab_size, d_model)
 
+        # Embedding router function for separate embeddings (set via set_embedding_router)
+        self.embedding_router = None
+
         # Shared output head (used across all prediction depths)
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False)
 
@@ -100,6 +103,15 @@ class MTPHead(nn.Module):
             MTPModule(d_model, num_heads, dropout)
             for _ in range(mtp_tokens)
         ])
+
+    def set_embedding_router(self, router_fn):
+        """
+        Set the embedding router function for separate embedding tables.
+
+        Args:
+            router_fn: Function that takes input_ids and returns embeddings
+        """
+        self.embedding_router = router_fn
 
     def forward(self, hidden, embeddings=None, mtp_labels=None):
         """
@@ -140,14 +152,21 @@ class MTPHead(nn.Module):
                         teacher_tokens = mtp_labels[:, :, depth-1]  # [batch, seq_len]
                         # Mask invalid positions
                         valid_mask = teacher_tokens != -100
-                        # Embed the tokens
-                        next_token_emb = self.embedding(teacher_tokens.clamp(min=0))  # [batch, seq_len, d_model]
+                        # Embed the tokens using router if available, else use direct embedding
+                        if self.embedding_router is not None:
+                            next_token_emb = self.embedding_router(teacher_tokens.clamp(min=0))  # [batch, seq_len, d_model]
+                        else:
+                            next_token_emb = self.embedding(teacher_tokens.clamp(min=0))  # [batch, seq_len, d_model]
                         # Zero out invalid positions
                         next_token_emb = next_token_emb * valid_mask.unsqueeze(-1)
                 else:
                     # During inference, use argmax of previous predictions
                     predicted_tokens = prev_logits.argmax(dim=-1)  # [batch, seq_len]
-                    next_token_emb = self.embedding(predicted_tokens)  # [batch, seq_len, d_model]
+                    # Embed using router if available, else use direct embedding
+                    if self.embedding_router is not None:
+                        next_token_emb = self.embedding_router(predicted_tokens)  # [batch, seq_len, d_model]
+                    else:
+                        next_token_emb = self.embedding(predicted_tokens)  # [batch, seq_len, d_model]
 
                     # Optionally stop gradients for inference-like behavior during training
                     if self.training:

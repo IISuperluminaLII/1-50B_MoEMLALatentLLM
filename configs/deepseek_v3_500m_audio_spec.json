@@ -1,0 +1,183 @@
+{
+  "experiment_name": "deepseek_v3_500m_audio_spec_en2zh",
+  "output_dir": "S:/DL+Diffusion Models/LLM/DL/CKPTS/run0_audio_spec_ckpts",
+  "seed": 42,
+  "model": {
+    "num_layers": 24,
+    "vocab_size": 51540,
+    "norm_type": "rmsnorm",
+    "norm_eps": 1e-06,
+    "tie_word_embeddings": false,
+    "init_method_std": 0.006,
+    "dense_layer_interval": 3,
+    "mla": {
+      "d_model": 1536,
+      "d_latent": 384,
+      "num_heads": 24,
+      "num_kv_heads": 24,
+      "use_fp8_kv": false,
+      "max_context_length": 2048,
+      "use_flash_mla": true,
+      "flash_mla_backend": "auto",
+      "fallback_to_dense": true,
+      "use_rope": true,
+      "rope_theta": 10000.0,
+      "sliding_window": null,
+      "attn_dropout": 0.1
+    },
+    "moe": {
+      "num_experts": 16,
+      "num_experts_per_token": 4,
+      "expert_intermediate_size": 4096,
+      "expert_dim": 4096,
+      "dropout": 0.1,
+      "num_shared_experts": 2,
+      "shared_intermediate_size": 4096,
+      "router_aux_loss_weight": 0.001,
+      "router_temperature": 1.0,
+      "router_noise_std": 0.1,
+      "router_bias_decay": 0.99,
+      "capacity_factor": 1.25,
+      "use_aux_loss_free": false,
+      "balance_loss_type": "entropy",
+      "min_expert_capacity": 4,
+      "use_deep_ep": false,
+      "deep_ep_fp8": false,
+      "deep_ep_async": false
+    },
+    "audio": {
+      "enable_audio": true,
+      "audio_mode": "spec",
+      "mulaw_stride": 4,
+      "spec_codebook_path": "data/spec_codebook_1024.pt",
+      "phoneme_mode": "interleaved",
+      "phoneme_cross_attn_layers": null,
+      "phoneme_d_model": 512,
+      "mask_text_tokens_in_generation": true,
+      "audio_token_ranges": [
+        [50000, 50256],
+        [50262, 51286]
+      ]
+    }
+  },
+  "training": {
+    "device": "cuda",
+    "global_batch_size": 64,
+    "micro_batch_size": 2,
+    "gradient_accumulation_steps": 32,
+    "seq_length": 2048,
+    "tokens_per_parameter_ratio": 20.0,
+    "total_training_tokens": null,
+    "learning_rate": 0.0003,
+    "min_learning_rate": 3e-05,
+    "lr_warmup_steps": 2000,
+    "lr_decay_style": "cosine",
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "use_fp16": false,
+    "use_bf16": true,
+    "use_fp8": false,
+    "use_mtp": false,
+    "num_predict_tokens": 1,
+    "mtp_tokens": 1,
+    "train_steps": 50000,
+    "eval_interval": 1000,
+    "save_interval": 5000,
+    "log_interval": 10,
+    "optimizer": "adamw",
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "adam_eps": 1e-08,
+    "gradient_checkpointing": true,
+    "memory_efficient_attention": true
+  },
+  "data": {
+    "dataset_type": "paired_audio",
+    "tsv_path": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/en/train_combined_phonemes.tsv",
+    "audio_root_source": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/en/clips",
+    "audio_root_target": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/en/clips_translated",
+    "task": "en2zh",
+    "max_audio_tokens": 1024,
+    "augment": true,
+    "preprocessing": {
+      "num_workers": 0,
+      "shuffle": true,
+      "shuffle_seed": 42,
+      "streaming": false,
+      "buffer_size": 1000,
+      "prefetch_factor": 2,
+      "pin_memory": true
+    }
+  },
+  "distributed": {
+    "backend": "nccl",
+    "launcher": "single_gpu",
+    "tensor_parallel_size": 1,
+    "pipeline_parallel_size": 1,
+    "expert_parallel_size": 1,
+    "data_parallel_size": 1,
+    "zero_stage": 2,
+    "zero_offload": true,
+    "overlap_grad_reduce": true,
+    "overlap_param_gather": true,
+    "deepspeed": {
+      "enabled": true,
+      "config_file": "configs/deepspeed_config_gpu_single.json"
+    }
+  },
+  "checkpointing": {
+    "save_interval": 5000,
+    "save_total_limit": 3,
+    "resume_from_checkpoint": null,
+    "checkpoint_format": "pytorch",
+    "save_optimizer_states": true,
+    "load_pretrained_text_model": null
+  },
+  "logging": {
+    "log_interval": 10,
+    "wandb": {
+      "enabled": false,
+      "project": "deepseek-v3-500m-audio-spec",
+      "entity": null,
+      "name": null,
+      "tags": [
+        "500m",
+        "audio",
+        "spec",
+        "en2zh",
+        "s2s"
+      ]
+    },
+    "tensorboard": {
+      "enabled": true,
+      "log_dir": "./logs/audio_spec_500m"
+    }
+  },
+  "validation": {
+    "enabled": true,
+    "eval_interval": 1000,
+    "eval_samples": 100,
+    "metrics": [
+      "loss",
+      "perplexity",
+      "audio_quality"
+    ]
+  },
+  "gpu_optimization": {
+    "cuda_graphs": false,
+    "torch_compile": false,
+    "flash_attention": true,
+    "fused_kernels": true,
+    "autocast_dtype": "bfloat16"
+  },
+  "vocoder": {
+    "type": "istft",
+    "sample_rate": 16000,
+    "n_fft": 1024,
+    "hop_length": 256,
+    "use_refiner": true,
+    "refiner_channels": 128,
+    "refiner_layers": 3
+  },
+  "_comment": "500M parameter model for speech-to-speech translation using spectrogram tokenization (EN→ZH)"
+}

@@ -1,0 +1,164 @@
+{
+  "experiment_name": "deepseek_v3_50m_audio_test",
+  "output_dir": "S:/DL+Diffusion Models/LLM/DL/CKPTS/run0_audio_50m_test_ckpts",
+  "seed": 42,
+  "model": {
+    "num_layers": 4,
+    "vocab_size": 51540,
+    "norm_type": "rmsnorm",
+    "norm_eps": 1e-06,
+    "tie_word_embeddings": false,
+    "init_method_std": 0.02,
+    "dense_layer_interval": 2,
+    "mla": {
+      "d_model": 256,
+      "d_latent": 64,
+      "num_heads": 8,
+      "num_kv_heads": 8,
+      "use_fp8_kv": false,
+      "max_context_length": 512,
+      "use_flash_mla": true,
+      "flash_mla_backend": "auto",
+      "fallback_to_dense": true,
+      "use_rope": true,
+      "rope_theta": 10000.0,
+      "sliding_window": null,
+      "attn_dropout": 0.0
+    },
+    "moe": {
+      "num_experts": 8,
+      "num_experts_per_token": 4,
+      "expert_intermediate_size": 512,
+      "expert_dim": 512,
+      "dropout": 0.0,
+      "num_shared_experts": 2,
+      "shared_intermediate_size": 512,
+      "router_aux_loss_weight": 0.001,
+      "router_temperature": 1.0,
+      "router_noise_std": 0.0,
+      "router_bias_decay": 0.99,
+      "capacity_factor": 1.25,
+      "use_aux_loss_free": false,
+      "balance_loss_type": "entropy",
+      "min_expert_capacity": 4,
+      "use_deep_ep": false,
+      "deep_ep_fp8": false,
+      "deep_ep_async": false
+    },
+    "audio": {
+      "enable_audio": true,
+      "audio_mode": "spec",
+      "mulaw_stride": 4,
+      "spec_codebook_path": "data/spec_codebook_1024.pt",
+      "phoneme_mode": "none",
+      "phoneme_cross_attn_layers": null,
+      "phoneme_d_model": 256,
+      "mask_text_tokens_in_generation": true,
+      "audio_token_ranges": [
+        [50000, 50256],
+        [50262, 51286]
+      ]
+    }
+  },
+  "training": {
+    "device": "cuda",
+    "global_batch_size": 32,
+    "micro_batch_size": 8,
+    "gradient_accumulation_steps": 8,
+    "seq_length": 512,
+    "tokens_per_parameter_ratio": 40.0,
+    "total_training_tokens": null,
+    "learning_rate": 0.00008,
+    "min_learning_rate": 0.000008,
+    "lr_warmup_steps": 100,
+    "lr_decay_style": "cosine",
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "use_fp16": false,
+    "use_bf16": true,
+    "use_fp8": false,
+    "use_mtp": false,
+    "num_predict_tokens": 1,
+    "mtp_tokens": 1,
+    "train_steps": 5000,
+    "eval_interval": 250,
+    "save_interval": 500,
+    "log_interval": 20,
+    "optimizer": "adamw",
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "adam_eps": 1e-08,
+    "gradient_checkpointing": false,
+    "memory_efficient_attention": false
+  },
+  "data": {
+    "dataset_type": "commonvoice",
+    "tsv_path": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/en/train_combined_phonemes_test200.tsv",
+    "clips_dir": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/cv-corpus-19.0-2024-09-13/en/clips",
+    "clips_translated_dir": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/cv-corpus-19.0-2024-09-13/en/clips_translated",
+    "task": "en2zh",
+    "max_audio_tokens": 256,
+    "max_samples": 100,
+    "augment": false,
+    "preprocessing": {
+      "num_workers": 0,
+      "shuffle": true,
+      "shuffle_seed": 42,
+      "streaming": false,
+      "buffer_size": 100,
+      "prefetch_factor": 2,
+      "pin_memory": true
+    }
+  },
+  "distributed": {
+    "backend": "nccl",
+    "launcher": "single_gpu",
+    "tensor_parallel_size": 1,
+    "pipeline_parallel_size": 1,
+    "expert_parallel_size": 1,
+    "data_parallel_size": 1,
+    "zero_stage": 0,
+    "zero_offload": false,
+    "overlap_grad_reduce": false,
+    "overlap_param_gather": false,
+    "deepspeed": {
+      "enabled": false,
+      "config_file": null
+    }
+  },
+  "checkpointing": {
+    "save_interval": 500,
+    "save_total_limit": 1,
+    "resume_from_checkpoint": null,
+    "checkpoint_format": "pytorch",
+    "save_optimizer_states": false,
+    "load_pretrained_text_model": null
+  },
+  "logging": {
+    "log_interval": 20,
+    "wandb": {
+      "enabled": false
+    },
+    "tensorboard": {
+      "enabled": false
+    }
+  },
+  "validation": {
+    "enabled": false
+  },
+  "gpu_optimization": {
+    "cuda_graphs": false,
+    "torch_compile": false,
+    "flash_attention": true,
+    "fused_kernels": true,
+    "autocast_dtype": "bfloat16"
+  },
+  "vocoder": {
+    "type": "istft",
+    "sample_rate": 16000,
+    "n_fft": 1024,
+    "hop_length": 256,
+    "use_refiner": false
+  },
+  "_comment": "50M parameter model for testing (loss < 2). 4 layers, 256 dim, 4 experts, 500 steps, 100 samples."
+}

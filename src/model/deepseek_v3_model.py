@@ -190,8 +190,22 @@ class DeepSeekV3Model(nn.Module):
         self.num_layers = config.num_layers
         self.mtp_tokens = getattr(config.training, "mtp_tokens", 2)  # fallback
 
-        # Token embeddings (RoPE is applied in MLAAttention)
-        self.token_embed = nn.Embedding(config.vocab_size, d_model)
+        # Separate token embeddings for different modalities
+        # This prevents audio tokens from getting text-optimized representations
+        self.text_embed = nn.Embedding(50000, d_model)  # Text tokens [0, 50000)
+        self.mulaw_audio_embed = nn.Embedding(256, d_model)  # μ-law audio [50000, 50256)
+        self.special_embed = nn.Embedding(6, d_model)  # Special tokens [50256, 50262)
+        self.spec_audio_embed = nn.Embedding(1024, d_model)  # Spec audio [50262, 51286)
+        self.phoneme_embed = nn.Embedding(254, d_model)  # Phoneme tokens [51286, 51540)
+
+        # Initialize audio embeddings with scaled variance for acoustic preservation
+        # Audio tokens need larger initialization to preserve fine-grained details
+        nn.init.normal_(self.mulaw_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
+        nn.init.normal_(self.spec_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
+        nn.init.normal_(self.phoneme_embed.weight, mean=0.0, std=config.init_method_std)
+
+        # Keep reference for MTP head (will be updated to use combined lookup)
+        self.token_embed = None  # Deprecated - use _get_token_embeddings instead
 
         # Fragmented architecture: Mix of MLA-only and MLA+MoE layers
         # Pattern: Use MLA-only for first layer and periodically throughout
@@ -264,8 +278,67 @@ class DeepSeekV3Model(nn.Module):
 
         # Heads: Next-token LM head + MTP
         self.lm_head = nn.Linear(d_model, config.vocab_size, bias=False)
-        # Pass the shared token embedding layer to MTP head for sequential conditioning
-        self.mtp_head = MTPHead(d_model, config.vocab_size, mtp_tokens=self.mtp_tokens, embedding_layer=self.token_embed)
+        # MTP head with embedding routing support
+        self.mtp_head = MTPHead(d_model, config.vocab_size, mtp_tokens=self.mtp_tokens, embedding_layer=None)
+        # Pass embedding router to MTP head
+        self.mtp_head.set_embedding_router(self._get_token_embeddings)
+
+    def _get_token_embeddings(self, input_ids):
+        """
+        Route tokens to appropriate embedding tables based on token ID ranges.
+
+        Token ranges:
+        - Text: [0, 50000)
+        - μ-law audio: [50000, 50256)
+        - Special: [50256, 50262)
+        - Spec audio: [50262, 51286)
+        - Phoneme: [51286, 51540)
+
+        Args:
+            input_ids: [batch, seq_len] token IDs
+
+        Returns:
+            embeddings: [batch, seq_len, d_model]
+        """
+        batch_size, seq_len = input_ids.shape
+        d_model = self.text_embed.embedding_dim
+        device = input_ids.device
+
+        # Initialize output embeddings
+        embeddings = torch.zeros(batch_size, seq_len, d_model, device=device)
+
+        # Process each modality separately
+        # Text tokens [0, 50000)
+        text_mask = input_ids < 50000
+        if text_mask.any():
+            text_ids = input_ids[text_mask]
+            embeddings[text_mask] = self.text_embed(text_ids)
+
+        # μ-law audio [50000, 50256)
+        mulaw_mask = (input_ids >= 50000) & (input_ids < 50256)
+        if mulaw_mask.any():
+            mulaw_ids = input_ids[mulaw_mask] - 50000  # Offset to [0, 256)
+            embeddings[mulaw_mask] = self.mulaw_audio_embed(mulaw_ids)
+
+        # Special tokens [50256, 50262)
+        special_mask = (input_ids >= 50256) & (input_ids < 50262)
+        if special_mask.any():
+            special_ids = input_ids[special_mask] - 50256  # Offset to [0, 6)
+            embeddings[special_mask] = self.special_embed(special_ids)
+
+        # Spectrogram audio [50262, 51286)
+        spec_mask = (input_ids >= 50262) & (input_ids < 51286)
+        if spec_mask.any():
+            spec_ids = input_ids[spec_mask] - 50262  # Offset to [0, 1024)
+            embeddings[spec_mask] = self.spec_audio_embed(spec_ids)
+
+        # Phoneme tokens [51286, 51540)
+        phoneme_mask = (input_ids >= 51286) & (input_ids < 51540)
+        if phoneme_mask.any():
+            phoneme_ids = input_ids[phoneme_mask] - 51286  # Offset to [0, 254)
+            embeddings[phoneme_mask] = self.phoneme_embed(phoneme_ids)
+
+        return embeddings
 
     def forward(
         self,
@@ -286,8 +359,8 @@ class DeepSeekV3Model(nn.Module):
         bsz, seq_len = input_ids.shape
         device = input_ids.device
 
-        # Token embeddings (no learned positional embeddings - using RoPE)
-        hidden = self.token_embed(input_ids)
+        # Token embeddings with modality-specific routing (no learned positional embeddings - using RoPE)
+        hidden = self._get_token_embeddings(input_ids)  # [batch, seq_len, d_model]
         hidden = hidden.transpose(0, 1)  # [seq_len, batch, d_model]
 
         # Build causal mask - need to account for cached sequence length
@@ -356,15 +429,56 @@ class DeepSeekV3Model(nn.Module):
 
         hidden = hidden.transpose(0, 1)  # [batch, seq_len, d_model]
 
-        # Next-token LM
+        # Next-token LM with separate audio/text loss computation
         logits = self.lm_head(hidden)
         lm_loss = None
+        lm_loss_text = None
+        lm_loss_audio = None
+
         if labels is not None:
-            lm_loss = nn.functional.cross_entropy(
-                logits[:, :-1].reshape(-1, self.vocab_size),
-                labels[:, 1:].reshape(-1),
-                ignore_index=-100
-            )
+            # Flatten for loss computation
+            logits_flat = logits[:, :-1].reshape(-1, self.vocab_size)
+            labels_flat = labels[:, 1:].reshape(-1)
+
+            # Separate audio and text tokens for weighted loss
+            # Audio tokens: [50000, 51286)
+            audio_mask = (labels_flat >= 50000) & (labels_flat < 51286) & (labels_flat != -100)
+            text_mask = (labels_flat < 50000) & (labels_flat != -100)
+
+            # Compute separate losses
+            if text_mask.any():
+                lm_loss_text = nn.functional.cross_entropy(
+                    logits_flat[text_mask],
+                    labels_flat[text_mask],
+                    reduction='mean'
+                )
+
+            if audio_mask.any():
+                lm_loss_audio = nn.functional.cross_entropy(
+                    logits_flat[audio_mask],
+                    labels_flat[audio_mask],
+                    reduction='mean'
+                )
+
+            # Weighted combination
+            # Get audio loss weight from config (default 2.0 to boost audio learning)
+            audio_loss_weight = getattr(self.config.training, 'audio_loss_weight', 2.0) if hasattr(self, 'config') else 2.0
+            text_loss_weight = getattr(self.config.training, 'text_loss_weight', 1.0) if hasattr(self, 'config') else 1.0
+
+            # Combine losses with weights
+            if lm_loss_text is not None and lm_loss_audio is not None:
+                lm_loss = text_loss_weight * lm_loss_text + audio_loss_weight * lm_loss_audio
+            elif lm_loss_text is not None:
+                lm_loss = text_loss_weight * lm_loss_text
+            elif lm_loss_audio is not None:
+                lm_loss = audio_loss_weight * lm_loss_audio
+            else:
+                # Fallback to standard cross-entropy if no valid tokens
+                lm_loss = nn.functional.cross_entropy(
+                    logits_flat,
+                    labels_flat,
+                    ignore_index=-100
+                )
 
         # MTP
         mtp_logits, mtp_loss = self.mtp_head(hidden, mtp_labels=mtp_labels)
@@ -413,7 +527,8 @@ class DeepSeekV3Model(nn.Module):
 
         # Get loss weights from config if available
         lm_weight = getattr(self.config.training, 'lm_loss_weight', 1.0) if hasattr(self, 'config') else 1.0
-        mtp_weight = 1.0  # For now, uniform MTP weight; could use per-depth weights
+        # Fix: Use config instead of hard-coded 1.0; default 0.5 for MTP to prevent dominance
+        mtp_weight = getattr(self.config.training, 'mtp_loss_weight', 0.5) if hasattr(self, 'config') else 0.5
         moe_weight = getattr(self.config.training, 'moe_aux_loss_weight', 0.001) if hasattr(self, 'config') else 0.001
 
         # When configs are mocked in unit tests these values may be Mock objects.

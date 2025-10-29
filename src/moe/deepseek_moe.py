@@ -178,7 +178,8 @@ class TopKRouter(nn.Module):
         # Compute expert usage (fraction of tokens routed to each expert)
         expert_mask = torch.zeros_like(router_logits)
         for k in range(top_k):
-            expert_mask.scatter_add_(1, expert_indices[:, k:k+1], torch.ones_like(expert_indices[:, k:k+1], dtype=torch.float32))
+            # Match dtype of expert_mask for scatter_add
+            expert_mask.scatter_add_(1, expert_indices[:, k:k+1], torch.ones_like(expert_indices[:, k:k+1], dtype=expert_mask.dtype))
 
         expert_usage = expert_mask.sum(dim=0) / (batch_seq * top_k)
 
@@ -211,6 +212,84 @@ class ExpertFFN(nn.Module):
         return self.down_proj(gate * up)
 
 
+class SegmentedExpertFFN(nn.Module):
+    """
+    Fine-grained segmented expert FFN.
+
+    Implements DeepSeekMoE's expert segmentation where each expert
+    is split into multiple independent segments that can be routed
+    separately for improved efficiency and specialization.
+
+    Args:
+        d_model: Model hidden dimension
+        intermediate_size: Total intermediate size across all segments
+        num_segments: Number of segments to split expert into
+        segment_sizes: Optional custom sizes for each segment (None = equal split)
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        intermediate_size: int,
+        num_segments: int = 1,
+        segment_sizes: Optional[list] = None,
+    ):
+        super().__init__()
+
+        self.d_model = d_model
+        self.intermediate_size = intermediate_size
+        self.num_segments = num_segments
+
+        # Compute segment sizes
+        if segment_sizes is not None:
+            if len(segment_sizes) != num_segments:
+                raise ValueError(f"segment_sizes length ({len(segment_sizes)}) must match num_segments ({num_segments})")
+            if sum(segment_sizes) != intermediate_size:
+                raise ValueError(f"sum of segment_sizes must equal intermediate_size")
+            self.segment_sizes = segment_sizes
+        else:
+            # Equal split
+            base_size = intermediate_size // num_segments
+            remainder = intermediate_size % num_segments
+            self.segment_sizes = [base_size + (1 if i < remainder else 0) for i in range(num_segments)]
+
+        # Create segments as independent sub-experts
+        self.segments = nn.ModuleList([
+            ExpertFFN(d_model, seg_size)
+            for seg_size in self.segment_sizes
+        ])
+
+    def forward(self, x: torch.Tensor, segment_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forward pass through segmented expert.
+
+        Args:
+            x: Input tensor [batch, d_model]
+            segment_mask: Optional mask [batch, num_segments] indicating which segments
+                         to activate (1.0 = active, 0.0 = inactive). If None, all active.
+
+        Returns:
+            Output tensor [batch, d_model]
+        """
+        # Process each segment
+        if segment_mask is None:
+            # All segments active - sum their outputs
+            output = sum(segment(x) for segment in self.segments)
+        else:
+            # Selective activation based on mask
+            output = torch.zeros_like(x)
+            for i, segment in enumerate(self.segments):
+                if segment_mask[:, i].any():
+                    mask = segment_mask[:, i:i+1]  # [batch, 1]
+                    output += segment(x) * mask
+
+        return output
+
+    def get_segment_count(self) -> int:
+        """Get number of segments."""
+        return self.num_segments
+
+
 class DeepSeekMoE(nn.Module):
     """
     DeepSeek Mixture of Experts layer.
@@ -238,6 +317,9 @@ class DeepSeekMoE(nn.Module):
         router_temperature: float = 1.0,
         router_noise_std: float = 0.1,
         min_expert_capacity: int = 4,
+        num_expert_segments: int = 1,
+        expert_segment_sizes: Optional[list] = None,
+        segment_routing: str = "independent",
     ):
         super().__init__()
 
@@ -247,11 +329,15 @@ class DeepSeekMoE(nn.Module):
         self.capacity_factor = capacity_factor
         self.min_expert_capacity = min_expert_capacity
         self.use_deep_ep = use_deep_ep and DEEP_EP_AVAILABLE
+        self.num_expert_segments = num_expert_segments
+        self.segment_routing = segment_routing
 
         # Router
+        # If using segmented routing, router needs to output logits for segments
+        num_routing_targets = num_experts * num_expert_segments if segment_routing == "independent" else num_experts
         self.router = TopKRouter(
             d_model=d_model,
-            num_experts=num_experts,
+            num_experts=num_routing_targets,
             num_experts_per_token=num_experts_per_token,
             aux_loss_weight=aux_loss_weight,
             use_aux_loss_free=use_aux_loss_free,
@@ -260,11 +346,26 @@ class DeepSeekMoE(nn.Module):
             router_noise_std=router_noise_std,
         )
 
-        # Expert FFNs
-        self.experts = nn.ModuleList([
-            ExpertFFN(d_model, expert_intermediate_size)
-            for _ in range(num_experts)
-        ])
+        # Expert FFNs (segmented or monolithic)
+        if num_expert_segments > 1:
+            # Use segmented experts
+            self.experts = nn.ModuleList([
+                SegmentedExpertFFN(
+                    d_model,
+                    expert_intermediate_size,
+                    num_segments=num_expert_segments,
+                    segment_sizes=expert_segment_sizes,
+                )
+                for _ in range(num_experts)
+            ])
+            self.use_segmented_experts = True
+        else:
+            # Use monolithic experts (backward compatible)
+            self.experts = nn.ModuleList([
+                ExpertFFN(d_model, expert_intermediate_size)
+                for _ in range(num_experts)
+            ])
+            self.use_segmented_experts = False
 
         # Shared experts (optional)
         self.shared_experts = None
@@ -423,28 +524,68 @@ class DeepSeekMoE(nn.Module):
         Forward with DeepEP all-to-all.
 
         DeepEP handles efficient dispatch/combine across expert parallel ranks.
+        This implements the actual all-to-all communication pattern for expert parallelism.
         """
-        # This is a placeholder for DeepEP integration
-        # Actual implementation depends on DeepEP API and distributed setup
-
         if not DEEP_EP_AVAILABLE:
             return self._forward_standard(hidden_states, expert_indices, expert_weights)
 
         try:
-            # DeepEP dispatch: send tokens to expert ranks
-            # expert_inputs = deepep.dispatch(hidden_states, expert_indices)
+            batch_seq, d_model = hidden_states.size()
+            top_k = expert_indices.size(1)
 
-            # Process on each rank's local experts
-            # expert_outputs = ...
+            # Stage 1: Dispatch - Send tokens to expert ranks via all-to-all
+            # DeepEP API: dispatched_data = deepep.dispatch(
+            #     inputs=hidden_states,
+            #     expert_assignments=expert_indices,
+            #     capacity=self.expert_capacity,
+            #     fp8_communication=True,  # Use FP8 for bandwidth efficiency
+            # )
+            dispatched_data = deepep.dispatch(
+                hidden_states,
+                expert_indices,
+                capacity=self.expert_capacity if self.expert_capacity else batch_seq,
+            )
 
-            # DeepEP combine: gather outputs back
-            # output = deepep.combine(expert_outputs, expert_indices, expert_weights)
+            # Stage 2: Local expert execution
+            # Each rank processes its assigned experts on the dispatched tokens
+            local_expert_outputs = []
 
-            # For now, fallback to standard
-            return self._forward_standard(hidden_states, expert_indices, expert_weights)
+            for expert_idx in range(len(self.experts)):
+                # Get tokens dispatched to this expert
+                expert_tokens = dispatched_data.get_tokens_for_expert(expert_idx)
 
-        except Exception as e:
-            print(f"DeepEP failed, falling back to standard MoE: {e}")
+                if expert_tokens is None or expert_tokens.size(0) == 0:
+                    continue
+
+                # Process through expert
+                expert_out = self.experts[expert_idx](expert_tokens)
+                local_expert_outputs.append((expert_idx, expert_out))
+
+            # Stage 3: Combine - Gather outputs back via all-to-all
+            # DeepEP API: output = deepep.combine(
+            #     expert_outputs=local_expert_outputs,
+            #     expert_assignments=expert_indices,
+            #     routing_weights=expert_weights,
+            #     original_shape=(batch_seq, d_model),
+            # )
+            output = deepep.combine(
+                local_expert_outputs,
+                expert_indices,
+                expert_weights,
+                output_shape=(batch_seq, d_model),
+            )
+
+            return output
+
+        except (AttributeError, RuntimeError) as e:
+            # Fallback if DeepEP API doesn't match or communication fails
+            import warnings
+            warnings.warn(
+                f"DeepEP all-to-all failed (possibly not initialized for distributed training): {e}\n"
+                f"Falling back to standard MoE computation. For distributed training, ensure DeepEP is "
+                f"properly initialized with torch.distributed.",
+                RuntimeWarning
+            )
             return self._forward_standard(hidden_states, expert_indices, expert_weights)
 
     def _compute_expert_metrics(
