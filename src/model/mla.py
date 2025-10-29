@@ -165,16 +165,20 @@ class MLAAttention(nn.Module):
 
         # Apply RoPE to Q and K
         # When using cache, Q and K may have different sequence lengths,
-        # so we need to apply RoPE separately
+        # so we need to apply RoPE separately with correct position offsets
         if past_key_value is not None:
+            # Compute cached prefix length
+            past_seq_len = full_seq_len - seq_len
+
             # Apply RoPE separately with correct position indices
-            # Q gets positions for current tokens only
-            cos_q = self.rope_cos[:seq_len].unsqueeze(1).unsqueeze(1)
-            sin_q = self.rope_sin[:seq_len].unsqueeze(1).unsqueeze(1)
+            # Q gets positions for new tokens: [past_seq_len, past_seq_len + seq_len)
+            # This ensures new queries have the correct absolute positions
+            cos_q = self.rope_cos[past_seq_len:past_seq_len + seq_len].unsqueeze(1).unsqueeze(1)
+            sin_q = self.rope_sin[past_seq_len:past_seq_len + seq_len].unsqueeze(1).unsqueeze(1)
             q1, q2 = q.split(self.head_dim // 2, dim=-1)
             rope_q = torch.cat([q1 * cos_q - q2 * sin_q, q1 * sin_q + q2 * cos_q], dim=-1)
 
-            # K gets positions for all tokens (past + current)
+            # K gets positions for all tokens (past + current): [0, full_seq_len)
             cos_k = self.rope_cos[:full_seq_len].unsqueeze(1).unsqueeze(1)
             sin_k = self.rope_sin[:full_seq_len].unsqueeze(1).unsqueeze(1)
             k1, k2 = k.split(self.head_dim // 2, dim=-1)

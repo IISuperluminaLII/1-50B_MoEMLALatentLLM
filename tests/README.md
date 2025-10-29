@@ -6,14 +6,20 @@ Comprehensive test suite for DeepSeek-V3 implementation with full coverage.
 
 ```
 tests/
-├── conftest.py              # Pytest configuration and fixtures
-├── unit/                    # Unit tests (fast, isolated)
-│   ├── test_mla.py         # MLA module tests
-│   ├── test_moe.py         # MoE module tests
-│   ├── test_config.py      # Configuration tests
-│   └── test_utils.py       # Utility tests
-└── integration/             # Integration tests (slower)
-    └── test_model_integration.py  # End-to-end tests
+├── conftest.py                     # Pytest configuration and fixtures
+├── unit/                           # Unit tests (fast, isolated)
+│   ├── test_mla.py                # MLA module tests
+│   ├── test_moe.py                # MoE module tests
+│   ├── test_config.py             # Configuration tests
+│   ├── test_utils.py              # Utility tests
+│   ├── test_audio_tokenizer.py   # Audio tokenization tests
+│   ├── test_spec_packer.py        # Spectrogram packing tests
+│   ├── test_logit_mask.py         # Logit masking tests
+│   ├── test_phoneme_cross_attn.py # Phoneme cross-attention tests
+│   └── test_vocoders.py           # Vocoder tests
+├── integration/                    # Integration tests (slower)
+│   └── test_model_integration.py  # End-to-end tests
+└── run_tests.py                    # Test runner script
 ```
 
 ## Running Tests
@@ -66,6 +72,10 @@ pytest -m "not slow"
 - `moe`: MoE-specific tests
 - `config`: Configuration tests
 - `training`: Training pipeline tests
+- `audio`: Audio processing tests
+- `vocoder`: Vocoder tests
+- `requires_audio_files`: Tests requiring audio files
+- `requires_codebook`: Tests requiring trained codebook
 
 ## Test Coverage
 
@@ -92,6 +102,59 @@ pytest -m "not slow"
 - ✅ Expert utilization
 - ✅ Shared experts
 - ✅ Load balancing metrics
+
+**Coverage:** ~95%
+
+#### Audio Tokenizer (`test_audio_tokenizer.py`)
+- ✅ Token vocabulary and ranges
+- ✅ Special token IDs
+- ✅ μ-law encoding/decoding
+- ✅ Spectrogram encoding
+- ✅ Audio loading and resampling
+- ✅ Token rate calculation
+- ✅ Batched encoding
+- ✅ Reconstruction quality
+
+**Coverage:** ~95%
+
+#### Spectrogram Packer (`test_spec_packer.py`)
+- ✅ Feature extraction from STFT
+- ✅ Frame packing/unpacking
+- ✅ VQ quantization
+- ✅ Full pack/unpack pipeline
+- ✅ Roundtrip reconstruction
+- ✅ K-means codebook training
+- ✅ Length calculations
+
+**Coverage:** ~95%
+
+#### Logit Masker (`test_logit_mask.py`)
+- ✅ Mask creation and caching
+- ✅ Text token masking
+- ✅ Audio token allowance
+- ✅ Mode-specific masking (μ-law/spec)
+- ✅ Sampling with mask
+- ✅ Probability distribution validation
+
+**Coverage:** ~95%
+
+#### Phoneme Cross-Attention (`test_phoneme_cross_attn.py`)
+- ✅ Cross-attention module
+- ✅ Phoneme encoder
+- ✅ Attention masking
+- ✅ Gradient flow
+- ✅ Variable-length sequences
+- ✅ End-to-end pipeline
+
+**Coverage:** ~95%
+
+#### Vocoders (`test_vocoders.py`)
+- ✅ iSTFT vocoder
+- ✅ Spectrogram refiner
+- ✅ STFT/iSTFT roundtrip
+- ✅ Batch processing
+- ✅ Output length calculation
+- ✅ Integration with spec_packer
 
 **Coverage:** ~95%
 
@@ -324,9 +387,11 @@ pytest --profile
 
 ### Expected Test Counts
 
-- Unit tests: ~50+ tests
+- Unit tests: ~100+ tests
+  - Core modules (MLA, MoE, Config): ~50 tests
+  - Audio modules: ~50 tests
 - Integration tests: ~10+ tests
-- Total: ~60+ tests
+- Total: ~110+ tests
 
 ### Expected Runtime
 

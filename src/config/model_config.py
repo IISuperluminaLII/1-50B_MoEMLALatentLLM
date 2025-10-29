@@ -2,7 +2,7 @@
 Model configuration for DeepSeek-V3 architecture.
 """
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 
 @dataclass
@@ -52,6 +52,11 @@ class MoEConfig:
     expert_dim: int = 18432  # Alias for expert_intermediate_size (backward compatibility)
     dropout: float = 0.1  # MoE dropout rate
 
+    # Fine-grained expert segmentation (DeepSeekMoE innovation)
+    num_expert_segments: int = 1  # Number of segments per expert (1 = no segmentation)
+    expert_segment_sizes: Optional[List[int]] = None  # Custom segment sizes (None = equal split)
+    segment_routing: str = "independent"  # "independent" or "shared" routing per segment
+
     # Shared experts (optional, for stability)
     num_shared_experts: int = 0
     shared_intermediate_size: int = 0
@@ -83,6 +88,23 @@ class MoEConfig:
             raise ValueError(f"top_k ({self.num_experts_per_token}) cannot exceed num_experts ({self.num_experts})")
         if self.capacity_factor < 1.0:
             print(f"Warning: capacity_factor ({self.capacity_factor}) < 1.0 may cause token dropping")
+
+        # Validate expert segmentation
+        if self.num_expert_segments < 1:
+            raise ValueError(f"num_expert_segments ({self.num_expert_segments}) must be >= 1")
+        if self.expert_segment_sizes is not None:
+            if len(self.expert_segment_sizes) != self.num_expert_segments:
+                raise ValueError(
+                    f"expert_segment_sizes length ({len(self.expert_segment_sizes)}) "
+                    f"must match num_expert_segments ({self.num_expert_segments})"
+                )
+            if sum(self.expert_segment_sizes) != self.expert_intermediate_size:
+                raise ValueError(
+                    f"sum of expert_segment_sizes ({sum(self.expert_segment_sizes)}) "
+                    f"must equal expert_intermediate_size ({self.expert_intermediate_size})"
+                )
+        if self.segment_routing not in ["independent", "shared"]:
+            raise ValueError(f"segment_routing must be 'independent' or 'shared', got: {self.segment_routing}")
 
 
 @dataclass
@@ -142,8 +164,13 @@ class TrainingConfig:
 
     # Loss weights (DeepSeek V3 paper specifies λ coefficients)
     lm_loss_weight: float = 1.0  # λ_LM: Next-token prediction loss weight
+    mtp_loss_weight: float = 0.5  # λ_MTP: Multi-token prediction loss weight (default 0.5)
     mtp_loss_weights: Optional[List[float]] = None  # λ_MTP[d]: Per-depth MTP weights (None = uniform)
     moe_aux_loss_weight: float = 0.001  # λ_aux: MoE auxiliary loss weight (sum across layers)
+
+    # Audio-specific loss weights (for speech-to-speech translation)
+    audio_loss_weight: float = 2.0  # λ_audio: Weight for audio token loss (boost audio learning)
+    text_loss_weight: float = 1.0  # λ_text: Weight for text token loss
 
     # Schedule
     train_steps: int = 500000
@@ -173,6 +200,38 @@ class TrainingConfig:
 
 
 @dataclass
+class AudioConfig:
+    """Audio tokenization and generation configuration."""
+
+    # Enable audio mode
+    enable_audio: bool = False
+
+    # Audio tokenization
+    audio_mode: str = "spec"  # "mulaw" or "spec"
+    mulaw_stride: int = 4  # Downsampling for μ-law
+    spec_codebook_path: Optional[str] = None  # Path to VQ codebook
+
+    # Phoneme features
+    phoneme_mode: str = "none"  # "interleaved", "cross_attn", "none"
+    phoneme_cross_attn_layers: Optional[List[int]] = None  # Layer indices for cross-attn (None = all layers)
+    phoneme_d_model: int = 512  # Phoneme encoder dimension
+
+    # Generation settings
+    mask_text_tokens_in_generation: bool = True  # Mask text tokens during audio generation
+    audio_token_ranges: List[Tuple[int, int]] = field(default_factory=lambda: [
+        (50000, 50256),  # μ-law
+        (50262, 51286),  # Spectrogram
+    ])
+
+    def __post_init__(self):
+        """Validate configuration."""
+        if self.audio_mode not in ["mulaw", "spec"]:
+            raise ValueError(f"Invalid audio_mode: {self.audio_mode}")
+        if self.phoneme_mode not in ["interleaved", "cross_attn", "none"]:
+            raise ValueError(f"Invalid phoneme_mode: {self.phoneme_mode}")
+
+
+@dataclass
 class DeepSeekV3Config:
     """Complete DeepSeek-V3 model configuration."""
 
@@ -181,6 +240,7 @@ class DeepSeekV3Config:
     moe: MoEConfig = field(default_factory=MoEConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    audio: AudioConfig = field(default_factory=AudioConfig)
 
     # Model architecture
     num_layers: int = 61
