@@ -211,7 +211,20 @@ class BigVGANVocoder(BaseVocoder):
         try:
             # BigVGAN is not pip-installable, must clone repo
             import sys
-            sys.path.append("path/to/BigVGAN")  # User must set this
+            import os
+
+            # Try to get BigVGAN path from environment variable
+            bigvgan_path = os.environ.get('BIGVGAN_PATH')
+            if bigvgan_path:
+                sys.path.append(bigvgan_path)
+            else:
+                raise EnvironmentError(
+                    "BIGVGAN_PATH environment variable not set. "
+                    "Please set it to the path where BigVGAN is cloned:\n"
+                    "  export BIGVGAN_PATH=/path/to/BigVGAN\n"
+                    "Or install BigVGAN in your Python environment."
+                )
+
             from bigvgan import BigVGAN
             import json
 
