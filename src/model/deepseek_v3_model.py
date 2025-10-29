@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import math
+import warnings
 
 from .mla import MLAAttention, RMSNorm
 from ..moe.deepseek_moe import DeepSeekMoE, MoEOutput
@@ -204,8 +205,8 @@ class DeepSeekV3Model(nn.Module):
         nn.init.normal_(self.spec_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
         nn.init.normal_(self.phoneme_embed.weight, mean=0.0, std=config.init_method_std)
 
-        # Keep reference for MTP head (will be updated to use combined lookup)
-        self.token_embed = None  # Deprecated - use _get_token_embeddings instead
+        # Internal flag for deprecation tracking
+        self._token_embed_deprecated = True
 
         # Fragmented architecture: Mix of MLA-only and MLA+MoE layers
         # Pattern: Use MLA-only for first layer and periodically throughout
@@ -340,6 +341,20 @@ class DeepSeekV3Model(nn.Module):
 
         return embeddings
 
+    @property
+    def token_embed(self):
+        """
+        Deprecated property for backward compatibility.
+        Issues a deprecation warning when accessed.
+        """
+        warnings.warn(
+            "The 'token_embed' attribute is deprecated and will be removed in a future version. "
+            "Use '_get_token_embeddings()' method instead for proper multi-modal token embedding.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        return None
+
     def forward(
         self,
         input_ids,
@@ -441,8 +456,9 @@ class DeepSeekV3Model(nn.Module):
             labels_flat = labels[:, 1:].reshape(-1)
 
             # Separate audio and text tokens for weighted loss
-            # Audio tokens: [50000, 51286)
-            audio_mask = (labels_flat >= 50000) & (labels_flat < 51286) & (labels_flat != -100)
+            # Audio tokens: [50000, 51286) - μ-law, special, spectrogram
+            # Phoneme tokens: [51286, 51540) - also treated as "audio" since they're speech-related
+            audio_mask = (labels_flat >= 50000) & (labels_flat < 51540) & (labels_flat != -100)
             text_mask = (labels_flat < 50000) & (labels_flat != -100)
 
             # Compute separate losses

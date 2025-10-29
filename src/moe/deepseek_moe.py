@@ -12,13 +12,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     import deepep
     DEEP_EP_AVAILABLE = True
 except ImportError:
     DEEP_EP_AVAILABLE = False
-    print("Warning: DeepEP not available. Install from https://github.com/deepseek-ai/DeepEP")
+    logger.warning("DeepEP not available. Install from https://github.com/deepseek-ai/DeepEP")
 
 
 @dataclass
@@ -70,6 +73,7 @@ class TopKRouter(nn.Module):
             self.register_buffer(
                 "expert_loads",
                 torch.zeros(num_experts, dtype=torch.float32),
+                persistent=True,  # Persist in checkpoints for proper load balancing across restarts
             )
             self.load_ema_decay = router_bias_decay
 
@@ -459,25 +463,41 @@ class DeepSeekMoE(nn.Module):
         # Track tokens dropped due to capacity constraints
         tokens_dropped = 0
 
-        # Process each expert
-        for expert_idx in range(self.num_experts):
-            # Find tokens routed to this expert
-            expert_mask = (expert_indices == expert_idx)  # [batch_seq, top_k]
+        # Determine number of routing targets
+        # For independent segment routing: num_experts * num_expert_segments
+        # For shared routing or no segmentation: num_experts
+        if self.use_segmented_experts and self.segment_routing == "independent":
+            num_routing_targets = self.num_experts * self.num_expert_segments
+        else:
+            num_routing_targets = self.num_experts
 
-            if not expert_mask.any():
+        # Process each routing target
+        for routing_idx in range(num_routing_targets):
+            # Find tokens routed to this target
+            routing_mask = (expert_indices == routing_idx)  # [batch_seq, top_k]
+
+            if not routing_mask.any():
                 continue
 
-            # Collect all tokens for this expert across all k positions
+            # Map routing index to expert and segment
+            if self.use_segmented_experts and self.segment_routing == "independent":
+                expert_idx = routing_idx // self.num_expert_segments
+                segment_idx = routing_idx % self.num_expert_segments
+            else:
+                expert_idx = routing_idx
+                segment_idx = None
+
+            # Collect all tokens for this routing target across all k positions
             # and enforce capacity limit
             expert_token_indices = []
             expert_token_weights = []
 
             for k in range(top_k):
-                token_mask = expert_mask[:, k]
+                token_mask = routing_mask[:, k]
                 if not token_mask.any():
                     continue
 
-                # Get indices of tokens assigned to this expert at position k
+                # Get indices of tokens assigned to this routing target at position k
                 token_indices = torch.where(token_mask)[0]
                 token_weights = expert_weights[token_mask, k:k+1]
 
@@ -487,7 +507,7 @@ class DeepSeekMoE(nn.Module):
             if not expert_token_indices:
                 continue
 
-            # Concatenate all tokens for this expert
+            # Concatenate all tokens for this routing target
             all_token_indices = torch.cat(expert_token_indices)
             all_token_weights = torch.cat(expert_token_weights)
 
@@ -504,7 +524,20 @@ class DeepSeekMoE(nn.Module):
             # Process tokens through expert
             if len(all_token_indices) > 0:
                 tokens = hidden_states[all_token_indices]
-                expert_out = self.experts[expert_idx](tokens)
+
+                # For segmented experts with independent routing, create segment mask
+                if self.use_segmented_experts and self.segment_routing == "independent":
+                    # Create one-hot mask for the active segment
+                    segment_mask = torch.zeros(
+                        len(all_token_indices),
+                        self.num_expert_segments,
+                        device=tokens.device
+                    )
+                    segment_mask[:, segment_idx] = 1.0
+                    expert_out = self.experts[expert_idx](tokens, segment_mask=segment_mask)
+                else:
+                    # Monolithic expert or shared routing
+                    expert_out = self.experts[expert_idx](tokens)
 
                 # Add weighted output
                 output[all_token_indices] += expert_out * all_token_weights
@@ -525,8 +558,16 @@ class DeepSeekMoE(nn.Module):
 
         DeepEP handles efficient dispatch/combine across expert parallel ranks.
         This implements the actual all-to-all communication pattern for expert parallelism.
+
+        Note: Segmented routing currently falls back to standard implementation
+        as DeepEP doesn't natively support segment-level routing.
         """
         if not DEEP_EP_AVAILABLE:
+            return self._forward_standard(hidden_states, expert_indices, expert_weights)
+
+        # Fall back to standard implementation for segmented routing
+        # TODO: Implement DeepEP support for segmented experts
+        if self.use_segmented_experts and self.segment_routing == "independent":
             return self._forward_standard(hidden_states, expert_indices, expert_weights)
 
         try:

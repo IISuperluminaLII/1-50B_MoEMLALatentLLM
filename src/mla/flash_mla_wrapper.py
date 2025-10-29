@@ -8,13 +8,16 @@ import torch
 import torch.nn as nn
 from typing import Optional, Tuple
 from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     import flash_mla
     FLASH_MLA_AVAILABLE = True
 except ImportError:
     FLASH_MLA_AVAILABLE = False
-    print("Warning: FlashMLA not available. Install from https://github.com/deepseek-ai/FlashMLA")
+    logger.warning("FlashMLA not available. Install from https://github.com/deepseek-ai/FlashMLA")
 
 
 @dataclass
@@ -338,8 +341,15 @@ class MultiHeadLatentAttention(nn.Module):
             if attention_mask.shape[-2:] == attn_weights.shape[-2:]:
                 attn_weights = attn_weights + attention_mask
             else:
-                # Skip mask if shapes don't match (may need proper slicing/reshaping)
-                pass
+                # Raise error on shape mismatch instead of silently skipping
+                # This prevents incorrect results from missing mask application
+                raise ValueError(
+                    f"Attention mask shape mismatch: expected shape ending with "
+                    f"{attn_weights.shape[-2:]}, got {attention_mask.shape[-2:]}. "
+                    f"Attention weights shape: {attn_weights.shape}, "
+                    f"Mask shape: {attention_mask.shape}. "
+                    f"Cannot apply mask safely - please check input shapes."
+                )
 
         # Softmax and dropout
         attn_weights = torch.softmax(attn_weights, dim=-1)
