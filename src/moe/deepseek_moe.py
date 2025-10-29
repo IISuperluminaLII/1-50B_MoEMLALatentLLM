@@ -73,7 +73,7 @@ class TopKRouter(nn.Module):
             self.register_buffer(
                 "expert_loads",
                 torch.zeros(num_experts, dtype=torch.float32),
-                persistent=True,  # Persist in checkpoints for proper load balancing across restarts
+                persistent=True,  # Maintain load balancing state across checkpoints
             )
             self.load_ema_decay = router_bias_decay
 
@@ -567,6 +567,8 @@ class DeepSeekMoE(nn.Module):
 
         # Fall back to standard implementation for segmented routing
         # TODO: Implement DeepEP support for segmented experts
+        #       Requires extending all-to-all dispatch to handle segment-level routing.
+        #       Track progress: See ARCHITECTURAL_FIXES.md for implementation plan.
         if self.use_segmented_experts and self.segment_routing == "independent":
             return self._forward_standard(hidden_states, expert_indices, expert_weights)
 

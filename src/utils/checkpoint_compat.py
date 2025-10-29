@@ -74,14 +74,10 @@ def load_checkpoint_compatible(
     # Extract state dict (handle both raw and wrapped formats)
     if "model_state_dict" in checkpoint:
         state_dict = checkpoint["model_state_dict"]
-        metadata = {
-            "global_step": checkpoint.get("global_step", None),
-            "config": checkpoint.get("config", None),
-        }
-        logger.info(f"Loaded checkpoint from step {metadata['global_step']}")
+        global_step = checkpoint.get("global_step", "unknown")
+        logger.info(f"Loaded checkpoint from step {global_step}")
     else:
         state_dict = checkpoint
-        metadata = {}
         logger.info("Loaded raw state dict (no metadata)")
 
     # Apply compatibility fixes

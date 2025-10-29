@@ -7,6 +7,19 @@ from .mla import MLAAttention, RMSNorm
 from ..moe.deepseek_moe import DeepSeekMoE, MoEOutput
 from .mtp import MTPHead
 
+# Token range constants for multi-modal vocabulary
+TEXT_START = 0
+TEXT_END = 50000
+MULAW_START = 50000
+MULAW_END = 50256
+SPECIAL_START = 50256
+SPECIAL_END = 50262
+SPEC_START = 50262
+SPEC_END = 51286
+PHONEME_START = 51286
+PHONEME_END = 51540
+VOCAB_SIZE = 51540
+
 # Try to import FlashMLA wrapper and check if flash_mla is actually available
 try:
     from ..mla.flash_mla_wrapper import MultiHeadLatentAttention as FlashMLAAttention, FLASH_MLA_AVAILABLE
@@ -309,34 +322,34 @@ class DeepSeekV3Model(nn.Module):
         embeddings = torch.zeros(batch_size, seq_len, d_model, device=device)
 
         # Process each modality separately
-        # Text tokens [0, 50000)
-        text_mask = input_ids < 50000
+        # Text tokens
+        text_mask = input_ids < TEXT_END
         if text_mask.any():
             text_ids = input_ids[text_mask]
             embeddings[text_mask] = self.text_embed(text_ids)
 
-        # μ-law audio [50000, 50256)
-        mulaw_mask = (input_ids >= 50000) & (input_ids < 50256)
+        # μ-law audio
+        mulaw_mask = (input_ids >= MULAW_START) & (input_ids < MULAW_END)
         if mulaw_mask.any():
-            mulaw_ids = input_ids[mulaw_mask] - 50000  # Offset to [0, 256)
+            mulaw_ids = input_ids[mulaw_mask] - MULAW_START
             embeddings[mulaw_mask] = self.mulaw_audio_embed(mulaw_ids)
 
-        # Special tokens [50256, 50262)
-        special_mask = (input_ids >= 50256) & (input_ids < 50262)
+        # Special tokens
+        special_mask = (input_ids >= SPECIAL_START) & (input_ids < SPECIAL_END)
         if special_mask.any():
-            special_ids = input_ids[special_mask] - 50256  # Offset to [0, 6)
+            special_ids = input_ids[special_mask] - SPECIAL_START
             embeddings[special_mask] = self.special_embed(special_ids)
 
-        # Spectrogram audio [50262, 51286)
-        spec_mask = (input_ids >= 50262) & (input_ids < 51286)
+        # Spectrogram audio
+        spec_mask = (input_ids >= SPEC_START) & (input_ids < SPEC_END)
         if spec_mask.any():
-            spec_ids = input_ids[spec_mask] - 50262  # Offset to [0, 1024)
+            spec_ids = input_ids[spec_mask] - SPEC_START
             embeddings[spec_mask] = self.spec_audio_embed(spec_ids)
 
-        # Phoneme tokens [51286, 51540)
-        phoneme_mask = (input_ids >= 51286) & (input_ids < 51540)
+        # Phoneme tokens
+        phoneme_mask = (input_ids >= PHONEME_START) & (input_ids < PHONEME_END)
         if phoneme_mask.any():
-            phoneme_ids = input_ids[phoneme_mask] - 51286  # Offset to [0, 254)
+            phoneme_ids = input_ids[phoneme_mask] - PHONEME_START
             embeddings[phoneme_mask] = self.phoneme_embed(phoneme_ids)
 
         return embeddings
@@ -456,10 +469,9 @@ class DeepSeekV3Model(nn.Module):
             labels_flat = labels[:, 1:].reshape(-1)
 
             # Separate audio and text tokens for weighted loss
-            # Audio tokens: [50000, 51286) - μ-law, special, spectrogram
-            # Phoneme tokens: [51286, 51540) - also treated as "audio" since they're speech-related
-            audio_mask = (labels_flat >= 50000) & (labels_flat < 51540) & (labels_flat != -100)
-            text_mask = (labels_flat < 50000) & (labels_flat != -100)
+            # Audio tokens include μ-law, special, spectrogram, and phonemes (all speech-related)
+            audio_mask = (labels_flat >= MULAW_START) & (labels_flat < PHONEME_END) & (labels_flat != -100)
+            text_mask = (labels_flat < TEXT_END) & (labels_flat != -100)
 
             # Compute separate losses
             if text_mask.any():
