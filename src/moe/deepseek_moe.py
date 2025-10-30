@@ -371,13 +371,16 @@ class DeepSeekMoE(nn.Module):
             ])
             self.use_segmented_experts = False
 
-        # Shared experts (optional)
+        # Shared experts (optional) with router-controlled gating
         self.shared_experts = None
+        self.shared_expert_gate = None
         if num_shared_experts > 0:
             self.shared_experts = nn.ModuleList([
                 ExpertFFN(d_model, shared_intermediate_size)
                 for _ in range(num_shared_experts)
             ])
+            # Learnable gating for shared experts (paper section 3.2)
+            self.shared_expert_gate = nn.Linear(d_model, num_shared_experts, bias=False)
 
         # Expert capacity (max tokens per expert)
         self.expert_capacity = None
@@ -426,12 +429,20 @@ class DeepSeekMoE(nn.Module):
                 expert_weights,
             )
 
-        # Add shared experts if present
+        # Add shared experts if present with router-controlled gating
         if self.shared_experts is not None:
+            # Compute gating weights for shared experts
+            shared_logits = self.shared_expert_gate(flat_hidden)  # [batch_seq, num_shared]
+            shared_weights = F.softmax(shared_logits, dim=-1)  # Normalize across shared experts
+
+            # Process each shared expert and weight by gate
             shared_output = torch.zeros_like(expert_output)
-            for shared_expert in self.shared_experts:
-                shared_output += shared_expert(flat_hidden)
-            shared_output = shared_output / len(self.shared_experts)
+            for i, shared_expert in enumerate(self.shared_experts):
+                expert_out = shared_expert(flat_hidden)  # [batch_seq, d_model]
+                # Weight by the learned gate for this shared expert
+                shared_output += expert_out * shared_weights[:, i:i+1]
+
+            # Add to routed expert output
             expert_output = expert_output + shared_output
 
         # Reshape back to [batch, seq, d_model]
