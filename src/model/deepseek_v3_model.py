@@ -49,8 +49,11 @@ class MLAOnlyBlock(nn.Module):
     ):
         super().__init__()
 
+        # Track which MLA implementation is being used
+        self.use_flash_mla = use_flash_mla and FLASH_MLA_AVAILABLE
+
         # Use FlashMLA if requested and available, otherwise fall back to standard MLA
-        if use_flash_mla and FLASH_MLA_AVAILABLE:
+        if self.use_flash_mla:
             self.mla = FlashMLAAttention(
                 d_model=d_model,
                 d_latent=d_latent if d_latent is not None else max(d_model // 4, 128),
@@ -85,14 +88,35 @@ class MLAOnlyBlock(nn.Module):
 
     def forward(self, x, causal_mask=None, key_padding_mask=None, past_key_value=None, use_cache=False):
         # Pre-norm + MLA + residual
-        mla_output = self.mla(
-            self.norm1(x),
-            causal_mask=causal_mask,
-            key_padding_mask=key_padding_mask,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
-        )
-        x = x + mla_output.hidden_states
+        # Note: x is [seq_len, batch, d_model] from DeepSeekV3Model
+        # FlashMLA expects [batch, seq_len, d_model], regular MLA expects [seq_len, batch, d_model]
+
+        normed_x = self.norm1(x)
+
+        if self.use_flash_mla:
+            # Transpose to [batch, seq_len, d_model] for FlashMLA
+            normed_x = normed_x.transpose(0, 1)
+            mla_output = self.mla(
+                normed_x,
+                causal_mask=causal_mask,
+                key_padding_mask=key_padding_mask,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+            )
+            # Transpose output back to [seq_len, batch, d_model]
+            hidden_states = mla_output.hidden_states.transpose(0, 1)
+        else:
+            # Regular MLA works with [seq_len, batch, d_model] directly
+            mla_output = self.mla(
+                normed_x,
+                causal_mask=causal_mask,
+                key_padding_mask=key_padding_mask,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+            )
+            hidden_states = mla_output.hidden_states
+
+        x = x + hidden_states
 
         # Pre-norm + dense FFN + residual
         ffn_out = self.ffn(self.norm2(x))
@@ -125,8 +149,11 @@ class MLAPlusMoEBlock(nn.Module):
     ):
         super().__init__()
 
+        # Track which MLA implementation is being used
+        self.use_flash_mla = use_flash_mla and FLASH_MLA_AVAILABLE
+
         # Use FlashMLA if requested and available, otherwise fall back to standard MLA
-        if use_flash_mla and FLASH_MLA_AVAILABLE:
+        if self.use_flash_mla:
             self.mla = FlashMLAAttention(
                 d_model=d_model,
                 d_latent=d_latent if d_latent is not None else max(d_model // 4, 128),
@@ -170,14 +197,35 @@ class MLAPlusMoEBlock(nn.Module):
 
     def forward(self, x, causal_mask=None, key_padding_mask=None, past_key_value=None, use_cache=False):
         # Pre-norm + MLA + residual
-        mla_output = self.mla(
-            self.norm1(x),
-            causal_mask=causal_mask,
-            key_padding_mask=key_padding_mask,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
-        )
-        x = x + mla_output.hidden_states
+        # Note: x is [seq_len, batch, d_model] from DeepSeekV3Model
+        # FlashMLA expects [batch, seq_len, d_model], regular MLA expects [seq_len, batch, d_model]
+
+        normed_x = self.norm1(x)
+
+        if self.use_flash_mla:
+            # Transpose to [batch, seq_len, d_model] for FlashMLA
+            normed_x = normed_x.transpose(0, 1)
+            mla_output = self.mla(
+                normed_x,
+                causal_mask=causal_mask,
+                key_padding_mask=key_padding_mask,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+            )
+            # Transpose output back to [seq_len, batch, d_model]
+            hidden_states = mla_output.hidden_states.transpose(0, 1)
+        else:
+            # Regular MLA works with [seq_len, batch, d_model] directly
+            mla_output = self.mla(
+                normed_x,
+                causal_mask=causal_mask,
+                key_padding_mask=key_padding_mask,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+            )
+            hidden_states = mla_output.hidden_states
+
+        x = x + hidden_states
 
         # Pre-norm + MoE + residual
         # MoE expects [batch, seq, d_model] format
@@ -286,6 +334,10 @@ class DeepSeekV3Model(nn.Module):
                     router_temperature=getattr(config.moe, 'router_temperature', 1.0),
                     router_noise_std=getattr(config.moe, 'router_noise_std', 0.1),
                     min_expert_capacity=getattr(config.moe, 'min_expert_capacity', 4),
+                    # Fine-grained expert segmentation (DeepSeek-V3 paper)
+                    num_expert_segments=getattr(config.moe, 'num_expert_segments', 1),
+                    expert_segment_sizes=getattr(config.moe, 'expert_segment_sizes', None),
+                    segment_routing=getattr(config.moe, 'segment_routing', 'independent'),
                 )
 
             self.blocks.append(block)
@@ -592,6 +644,5 @@ class DeepSeekV3Model(nn.Module):
         output.past_key_values = present_key_values  # For inference caching
         output.load_balancing_loss = moe_load_balancing_loss  # MoE aux loss
         output.moe_metrics = aggregated_moe_metrics  # Aggregated expert stats (now a flat dict for trainer)
-        output.expert_metrics = moe_expert_metrics_per_layer  # Keep per-layer metrics for compatibility
 
         return output

@@ -154,3 +154,6 @@ analyze_audio_output.py
 analyze_generated_audio.py
 DEEPSEEK_V3_COMPLIANCE_CHECK.md
 ARCHITECTURAL_FIXES.md
+CLAUDE.md
+model_test_output.txt
+training_test_output.txt

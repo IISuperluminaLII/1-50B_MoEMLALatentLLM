@@ -68,6 +68,10 @@ class TopKRouter(nn.Module):
         # Router linear layer
         self.router = nn.Linear(d_model, num_experts, bias=False)
 
+        # Initialize router with small weights to prevent extreme logits
+        # Use Xavier/Glorot initialization scaled down for stability
+        nn.init.xavier_uniform_(self.router.weight, gain=0.01)
+
         # Expert load tracking (for aux-loss-free balancing)
         if use_aux_loss_free:
             self.register_buffer(
@@ -99,6 +103,13 @@ class TopKRouter(nn.Module):
 
         # Compute router logits
         router_logits = self.router(hidden_states)  # [batch_seq, num_experts]
+
+        # Check for NaN/inf in router output
+        if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
+            import warnings
+            warnings.warn(f"Router produced NaN/inf! hidden_states has NaN: {torch.isnan(hidden_states).any()}, has inf: {torch.isinf(hidden_states).any()}, router weight has NaN: {torch.isnan(self.router.weight).any()}")
+            # Clamp to prevent NaN propagation
+            router_logits = torch.clamp(router_logits, min=-1e9, max=1e9)
 
         # Apply temperature
         if self.temperature != 1.0:
@@ -185,6 +196,10 @@ class TopKRouter(nn.Module):
             # Match dtype of expert_mask for scatter_add
             expert_mask.scatter_add_(1, expert_indices[:, k:k+1], torch.ones_like(expert_indices[:, k:k+1], dtype=expert_mask.dtype))
 
+        # Safeguard against division by zero
+        if batch_seq * top_k == 0:
+            return torch.tensor(0.0, device=router_logits.device, dtype=router_logits.dtype)
+
         expert_usage = expert_mask.sum(dim=0) / (batch_seq * top_k)
 
         # Compute mean routing probability per expert
@@ -193,6 +208,12 @@ class TopKRouter(nn.Module):
         # Aux loss: mean(usage * routing_prob) * num_experts
         # This encourages uniform distribution
         aux_loss = (expert_usage * mean_routing_prob).sum() * num_experts
+
+        # Check for NaN and return 0 if found (shouldn't happen with safeguards)
+        if torch.isnan(aux_loss):
+            import warnings
+            warnings.warn(f"NaN detected in aux_loss! routing_probs has NaN: {torch.isnan(routing_probs).any()}, expert_usage has NaN: {torch.isnan(expert_usage).any()}")
+            return torch.tensor(0.0, device=router_logits.device, dtype=router_logits.dtype)
 
         return aux_loss * self.aux_loss_weight
 
@@ -373,14 +394,11 @@ class DeepSeekMoE(nn.Module):
 
         # Shared experts (optional) with router-controlled gating
         self.shared_experts = None
-        self.shared_expert_gate = None
         if num_shared_experts > 0:
             self.shared_experts = nn.ModuleList([
                 ExpertFFN(d_model, shared_intermediate_size)
                 for _ in range(num_shared_experts)
             ])
-            # Learnable gating for shared experts (paper section 3.2)
-            self.shared_expert_gate = nn.Linear(d_model, num_shared_experts, bias=False)
 
         # Expert capacity (max tokens per expert)
         self.expert_capacity = None
@@ -429,20 +447,24 @@ class DeepSeekMoE(nn.Module):
                 expert_weights,
             )
 
-        # Add shared experts if present with router-controlled gating
+        # Add shared experts if present (direct addition per Eq. 12)
         if self.shared_experts is not None:
-            # Compute gating weights for shared experts
-            shared_logits = self.shared_expert_gate(flat_hidden)  # [batch_seq, num_shared]
-            shared_weights = F.softmax(shared_logits, dim=-1)  # Normalize across shared experts
-
-            # Process each shared expert and weight by gate
+            # Shared experts are always active and directly summed
+            # No softmax gating - each shared expert contributes additively
             shared_output = torch.zeros_like(expert_output)
-            for i, shared_expert in enumerate(self.shared_experts):
+            for shared_expert in self.shared_experts:
                 expert_out = shared_expert(flat_hidden)  # [batch_seq, d_model]
-                # Weight by the learned gate for this shared expert
-                shared_output += expert_out * shared_weights[:, i:i+1]
 
-            # Add to routed expert output
+                # Check for NaN in shared expert output
+                if torch.isnan(expert_out).any():
+                    import warnings
+                    warnings.warn(f"NaN detected in shared expert output! Input has NaN: {torch.isnan(flat_hidden).any()}")
+                    # Skip this expert to prevent NaN propagation
+                    continue
+
+                shared_output += expert_out
+
+            # Add to routed expert output (Eq. 12: h = shared_ffn + routed_ffn)
             expert_output = expert_output + shared_output
 
         # Reshape back to [batch, seq, d_model]

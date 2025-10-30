@@ -86,9 +86,21 @@ class MultiHeadLatentAttention(nn.Module):
         # Output projection
         self.o_proj = nn.Linear(num_heads * self.head_dim, d_model, bias=False)
 
+        # Initialize weights for numerical stability
+        self._init_weights()
+
         # RoPE embeddings
         self.rope_theta = rope_theta
         self._init_rope()
+
+    def _init_weights(self):
+        """Initialize weights for numerical stability."""
+        # Use Xavier/Glorot initialization for all linear layers
+        nn.init.xavier_uniform_(self.q_proj.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.kv_compress.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.k_expand.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.v_expand.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.o_proj.weight, gain=0.02)
 
     def _init_rope(self):
         """Initialize RoPE (Rotary Position Embeddings)."""
@@ -256,6 +268,9 @@ class MultiHeadLatentAttention(nn.Module):
         """Use FlashMLA kernel for attention."""
         import sys
 
+        # Save original dtype for fallback
+        orig_dtype = q.dtype
+
         try:
             # Check if flash_attn_varlen_func is available (SM100/SM120 build)
             if hasattr(flash_mla, 'flash_attn_varlen_func'):
@@ -263,7 +278,6 @@ class MultiHeadLatentAttention(nn.Module):
                 batch_size, seq_len, num_heads, head_dim = q.shape
 
                 # FlashMLA requires BFloat16 - convert if needed
-                orig_dtype = q.dtype
                 if orig_dtype != torch.bfloat16:
                     q = q.to(torch.bfloat16)
                     k = k.to(torch.bfloat16)
@@ -303,6 +317,11 @@ class MultiHeadLatentAttention(nn.Module):
 
         except Exception as e:
             print(f"FlashMLA kernel failed ({sys.platform}), falling back to standard attention: {e}")
+            # Convert back to original dtype before fallback
+            if q.dtype != orig_dtype:
+                q = q.to(orig_dtype)
+                k = k.to(orig_dtype)
+                v = v.to(orig_dtype)
             return self._standard_attention(q, k, v, attention_mask)
 
     def _standard_attention(
@@ -339,7 +358,17 @@ class MultiHeadLatentAttention(nn.Module):
         if attention_mask is not None:
             # Check if mask shape matches attention weights
             if attention_mask.shape[-2:] == attn_weights.shape[-2:]:
-                attn_weights = attn_weights + attention_mask
+                # Convert boolean masks to additive masks
+                # Boolean convention: True = mask out (prevent attention)
+                # Additive convention: -inf = mask out, 0.0 = keep
+                if attention_mask.dtype == torch.bool:
+                    # Create additive mask: True → -inf, False → 0.0
+                    additive_mask = torch.zeros_like(attn_weights)
+                    additive_mask.masked_fill_(attention_mask, float('-inf'))
+                    attn_weights = attn_weights + additive_mask
+                else:
+                    # Already additive (assume -inf for masked positions)
+                    attn_weights = attn_weights + attention_mask
             else:
                 # Raise error on shape mismatch instead of silently skipping
                 # This prevents incorrect results from missing mask application

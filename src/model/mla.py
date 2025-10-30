@@ -90,8 +90,31 @@ class MLAAttention(nn.Module):
         self.out_proj = nn.Linear(d_model, d_model)
         self.out_dropout = nn.Dropout(dropout)
 
+        # Initialize weights for numerical stability
+        self._init_weights()
+
         self.register_buffer("rope_cos", None, persistent=False)
         self.register_buffer("rope_sin", None, persistent=False)
+
+    def _init_weights(self):
+        """Initialize weights for numerical stability."""
+        # Use Xavier/Glorot initialization for all linear layers
+        nn.init.xavier_uniform_(self.q_proj.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.kv_compress.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.k_expand.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.v_expand.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.out_proj.weight, gain=0.02)
+        # Initialize biases to zero
+        if self.q_proj.bias is not None:
+            nn.init.zeros_(self.q_proj.bias)
+        if self.kv_compress.bias is not None:
+            nn.init.zeros_(self.kv_compress.bias)
+        if self.k_expand.bias is not None:
+            nn.init.zeros_(self.k_expand.bias)
+        if self.v_expand.bias is not None:
+            nn.init.zeros_(self.v_expand.bias)
+        if self.out_proj.bias is not None:
+            nn.init.zeros_(self.out_proj.bias)
 
     def _update_rope_cache(self, seq_len, device):
         """Build or update the RoPE cache if needed."""

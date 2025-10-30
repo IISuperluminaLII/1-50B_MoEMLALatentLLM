@@ -13,7 +13,7 @@ class MLAConfig:
     d_model: int = 7168  # Base hidden dimension
     d_latent: int = 1536  # Latent KV dimension (1/4 to 1/2 of d_model)
     num_heads: int = 128
-    num_kv_heads: int = 128  # Can be less for GQA
+    num_kv_heads: Optional[int] = None  # Defaults to num_heads; can be less for GQA
 
     # KV cache settings
     use_fp8_kv: bool = True
@@ -39,6 +39,17 @@ class MLAConfig:
         if self.d_latent * 4 < self.d_model:
             print(f"Warning: d_latent ({self.d_latent}) is < 1/4 of d_model ({self.d_model}). "
                   f"This may degrade quality.")
+
+        # Validate GQA constraints
+        if self.num_kv_heads is not None:
+            if self.num_kv_heads > self.num_heads:
+                raise ValueError(
+                    f"num_kv_heads ({self.num_kv_heads}) cannot be greater than num_heads ({self.num_heads})"
+                )
+            if self.num_heads % self.num_kv_heads != 0:
+                raise ValueError(
+                    f"num_heads ({self.num_heads}) must be divisible by num_kv_heads ({self.num_kv_heads}) for GQA"
+                )
 
 
 @dataclass

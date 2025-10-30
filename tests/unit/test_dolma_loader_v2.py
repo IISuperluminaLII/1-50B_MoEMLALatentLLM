@@ -57,6 +57,7 @@ class TestDolmaDatasetV2(unittest.TestCase):
                 split="train",
                 cache_dir=None,
                 streaming=True,
+                keep_in_memory=False,
                 trust_remote_code=True
             )
 

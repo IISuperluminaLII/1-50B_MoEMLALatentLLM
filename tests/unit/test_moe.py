@@ -463,10 +463,10 @@ class TestModelIntegration:
 
         # Check output has MoE metrics
         assert hasattr(output, 'load_balancing_loss')
-        assert hasattr(output, 'expert_metrics')
+        assert hasattr(output, 'moe_metrics')
 
-        # Expert metrics should be a list (one per MoE layer)
-        assert isinstance(output.expert_metrics, list)
+        # MoE metrics should be a dict (aggregated across layers)
+        assert isinstance(output.moe_metrics, dict) or output.moe_metrics is None
 
         # If training with aux loss, load_balancing_loss should be present
         if config.moe.router_aux_loss_weight > 0:
