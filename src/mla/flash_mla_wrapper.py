@@ -170,11 +170,32 @@ class MultiHeadLatentAttention(nn.Module):
         batch_size, seq_len, _ = hidden_states.size()
 
         # Merge masks for backward compatibility
+        # Properly combine causal and padding masks
         if causal_mask is not None or key_padding_mask is not None:
             if attention_mask is None:
-                attention_mask = causal_mask if causal_mask is not None else key_padding_mask
-            # Note: For full compatibility, would need to combine masks properly
-            # For now, just use whichever is provided
+                attention_mask = torch.zeros(1, 1, seq_len, seq_len, device=hidden_states.device, dtype=hidden_states.dtype)
+
+            # Add causal mask (prevents attention to future tokens)
+            if causal_mask is not None:
+                if causal_mask.dtype == torch.bool:
+                    # Convert boolean to additive mask: True → -inf, False → 0.0
+                    causal_additive = torch.zeros_like(attention_mask)
+                    causal_additive.masked_fill_(causal_mask.unsqueeze(0).unsqueeze(0) if causal_mask.dim() == 2 else causal_mask, float('-inf'))
+                    attention_mask = attention_mask + causal_additive
+                else:
+                    # Already additive
+                    attention_mask = attention_mask + causal_mask
+
+            # Add key padding mask (masks out padding positions)
+            if key_padding_mask is not None:
+                # key_padding_mask: [batch, seq] where True = padding
+                # Expand to [batch, 1, 1, seq] to mask keys
+                if key_padding_mask.dtype == torch.bool:
+                    padding_additive = torch.zeros(batch_size, 1, 1, seq_len, device=hidden_states.device, dtype=hidden_states.dtype)
+                    padding_additive.masked_fill_(key_padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+                    attention_mask = attention_mask + padding_additive
+                else:
+                    attention_mask = attention_mask + key_padding_mask.unsqueeze(1).unsqueeze(2)
 
         # Query projection
         q = self.q_proj(hidden_states)

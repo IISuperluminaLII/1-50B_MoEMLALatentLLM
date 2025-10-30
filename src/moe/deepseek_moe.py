@@ -150,12 +150,29 @@ class TopKRouter(nn.Module):
         Apply aux-loss-free load balancing bias.
 
         Penalizes overloaded experts by subtracting their historical load.
+        The bias strength is controlled by router_bias_decay (higher decay = weaker bias).
+
+        DeepSeek-V3 approach:
+        - Uses EMA-tracked expert loads to detect imbalance
+        - Subtracts normalized load from logits to discourage overused experts
+        - Eliminates need for auxiliary load balancing loss during training
         """
-        # Normalize expert loads to [0, 1]
-        load_bias = self.expert_loads / (self.expert_loads.max() + 1e-8)
+        # Normalize expert loads to [0, 1] range
+        max_load = self.expert_loads.max()
+        if max_load > 1e-8:
+            load_bias = self.expert_loads / max_load
+        else:
+            # No bias if no routing has occurred yet
+            load_bias = torch.zeros_like(self.expert_loads)
+
+        # Apply temperature scaling to bias strength
+        # Higher values = stronger penalty for overloaded experts
+        # Typical range: 0.1 to 2.0
+        bias_temperature = 1.0  # Default, could be made configurable
 
         # Subtract bias (penalize overloaded experts)
-        router_logits = router_logits - load_bias.unsqueeze(0)
+        # Shape: [batch_seq, num_experts] - [1, num_experts]
+        router_logits = router_logits - (load_bias * bias_temperature).unsqueeze(0)
 
         return router_logits
 
@@ -598,12 +615,11 @@ class DeepSeekMoE(nn.Module):
         if not DEEP_EP_AVAILABLE:
             return self._forward_standard(hidden_states, expert_indices, expert_weights)
 
-        # Fall back to standard implementation for segmented routing
-        # TODO: Implement DeepEP support for segmented experts
-        #       Requires extending all-to-all dispatch to handle segment-level routing.
-        #       Track progress: See ARCHITECTURAL_FIXES.md for implementation plan.
+        # For segmented experts with independent routing, treat each segment as a virtual expert
+        # DeepEP's dispatch/combine handles the all-to-all, we just need to map indices correctly
+        num_routing_targets = self.num_experts
         if self.use_segmented_experts and self.segment_routing == "independent":
-            return self._forward_standard(hidden_states, expert_indices, expert_weights)
+            num_routing_targets = self.num_experts * self.num_expert_segments
 
         try:
             batch_seq, d_model = hidden_states.size()
@@ -623,19 +639,37 @@ class DeepSeekMoE(nn.Module):
             )
 
             # Stage 2: Local expert execution
-            # Each rank processes its assigned experts on the dispatched tokens
+            # Each rank processes its assigned experts/segments on the dispatched tokens
             local_expert_outputs = []
 
-            for expert_idx in range(len(self.experts)):
-                # Get tokens dispatched to this expert
-                expert_tokens = dispatched_data.get_tokens_for_expert(expert_idx)
+            for routing_idx in range(num_routing_targets):
+                # Map routing index to (expert_idx, segment_idx) for segmented experts
+                if self.use_segmented_experts and self.segment_routing == "independent":
+                    expert_idx = routing_idx // self.num_expert_segments
+                    segment_idx = routing_idx % self.num_expert_segments
+                else:
+                    expert_idx = routing_idx
+                    segment_idx = None
+
+                # Get tokens dispatched to this routing target
+                expert_tokens = dispatched_data.get_tokens_for_expert(routing_idx)
 
                 if expert_tokens is None or expert_tokens.size(0) == 0:
                     continue
 
-                # Process through expert
-                expert_out = self.experts[expert_idx](expert_tokens)
-                local_expert_outputs.append((expert_idx, expert_out))
+                # Process through expert with optional segment mask
+                if segment_idx is not None:
+                    segment_mask = torch.zeros(
+                        expert_tokens.size(0),
+                        self.num_expert_segments,
+                        device=expert_tokens.device
+                    )
+                    segment_mask[:, segment_idx] = 1.0
+                    expert_out = self.experts[expert_idx](expert_tokens, segment_mask=segment_mask)
+                else:
+                    expert_out = self.experts[expert_idx](expert_tokens)
+
+                local_expert_outputs.append((routing_idx, expert_out))
 
             # Stage 3: Combine - Gather outputs back via all-to-all
             # DeepEP API: output = deepep.combine(
