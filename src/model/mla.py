@@ -48,14 +48,22 @@ class MLAAttention(nn.Module):
         dropout=0.1,
         use_fp8_kv=False,
         max_context_length=128000,
+        num_kv_heads=None,  # For GQA support
     ):
         super().__init__()
         self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else num_heads
         self.d_model = d_model
         self.head_dim = d_model // num_heads
+        self.kv_head_dim = d_model // self.num_kv_heads  # KV may have different head dim for GQA
         self.rope_base = rope_base
         self.use_fp8_kv = use_fp8_kv
         self.max_context_length = max_context_length
+
+        # Calculate number of query heads per KV head for GQA
+        if self.num_heads % self.num_kv_heads != 0:
+            raise ValueError(f"num_heads ({num_heads}) must be divisible by num_kv_heads ({self.num_kv_heads})")
+        self.num_queries_per_kv = self.num_heads // self.num_kv_heads
 
         # Default d_latent to ~1/4 of d_model if not specified (typical MLA ratio)
         self.d_latent = d_latent if d_latent is not None else max(d_model // 4, 128)
@@ -70,9 +78,11 @@ class MLAAttention(nn.Module):
         # KV compression to latent space (shared bottleneck for K and V)
         self.kv_compress = nn.Linear(d_model, self.d_latent)
 
-        # Separate expansion from latent to full K and V
-        self.k_expand = nn.Linear(self.d_latent, d_model)
-        self.v_expand = nn.Linear(self.d_latent, d_model)
+        # Separate expansion from latent to K and V
+        # For GQA, expand to num_kv_heads instead of num_heads
+        kv_total_dim = self.num_kv_heads * self.head_dim
+        self.k_expand = nn.Linear(self.d_latent, kv_total_dim)
+        self.v_expand = nn.Linear(self.d_latent, kv_total_dim)
 
         self.attn_dropout = nn.Dropout(dropout)
 
@@ -122,9 +132,16 @@ class MLAAttention(nn.Module):
         # KV compression to latent space (KEY INNOVATION: shared bottleneck)
         kv_latent = self.kv_compress(x)  # [seq_len, batch, d_latent]
 
-        # Expand latent to full K and V
-        k = self.k_expand(kv_latent).view(seq_len, batch_size, self.num_heads, self.head_dim)
-        v = self.v_expand(kv_latent).view(seq_len, batch_size, self.num_heads, self.head_dim)
+        # Expand latent to K and V (for GQA, this gives num_kv_heads)
+        k = self.k_expand(kv_latent).view(seq_len, batch_size, self.num_kv_heads, self.head_dim)
+        v = self.v_expand(kv_latent).view(seq_len, batch_size, self.num_kv_heads, self.head_dim)
+
+        # For GQA: replicate KV heads to match query heads
+        if self.num_kv_heads < self.num_heads:
+            # Repeat each KV head num_queries_per_kv times
+            # [seq, batch, num_kv_heads, head_dim] -> [seq, batch, num_heads, head_dim]
+            k = k.repeat_interleave(self.num_queries_per_kv, dim=2)
+            v = v.repeat_interleave(self.num_queries_per_kv, dim=2)
 
         # Handle KV cache for inference
         if past_key_value is not None:
@@ -136,9 +153,14 @@ class MLAAttention(nn.Module):
                     past_k_latent = past_k_latent.to(compute_dtype)
                 if past_v_latent.dtype == torch.float8_e4m3fn:
                     past_v_latent = past_v_latent.to(compute_dtype)
-            # Expand past latents
-            past_k = self.k_expand(past_k_latent).view(-1, batch_size, self.num_heads, self.head_dim)
-            past_v = self.v_expand(past_v_latent).view(-1, batch_size, self.num_heads, self.head_dim)
+            # Expand past latents (for GQA, this gives num_kv_heads)
+            past_k = self.k_expand(past_k_latent).view(-1, batch_size, self.num_kv_heads, self.head_dim)
+            past_v = self.v_expand(past_v_latent).view(-1, batch_size, self.num_kv_heads, self.head_dim)
+
+            # For GQA: replicate past KV heads to match query heads
+            if self.num_kv_heads < self.num_heads:
+                past_k = past_k.repeat_interleave(self.num_queries_per_kv, dim=2)
+                past_v = past_v.repeat_interleave(self.num_queries_per_kv, dim=2)
 
             # Concatenate with current K/V
             k = torch.cat([past_k, k], dim=0)
