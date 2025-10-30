@@ -609,19 +609,13 @@ class DeepSeekV3Model(nn.Module):
         lm_weight = getattr(self.config.training, 'lm_loss_weight', 1.0) if hasattr(self, 'config') else 1.0
         # Fix: Use config instead of hard-coded 1.0; default 0.5 for MTP to prevent dominance
         mtp_weight = getattr(self.config.training, 'mtp_loss_weight', 0.5) if hasattr(self, 'config') else 0.5
-        moe_weight = getattr(self.config.training, 'moe_aux_loss_weight', 0.001) if hasattr(self, 'config') else 0.001
 
         # When configs are mocked in unit tests these values may be Mock objects.
         # Ensure we always work with numeric scalars.
-        for name, value in (("lm_weight", lm_weight), ("moe_weight", moe_weight)):
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError):
-                numeric = 1.0 if name == "lm_weight" else 0.001
-            if name == "lm_weight":
-                lm_weight = numeric
-            else:
-                moe_weight = numeric
+        try:
+            lm_weight = float(lm_weight)
+        except (TypeError, ValueError):
+            lm_weight = 1.0
 
         if (lm_loss is not None) and (mtp_loss is not None):
             total_loss = lm_weight * lm_loss + mtp_weight * mtp_loss
@@ -630,9 +624,11 @@ class DeepSeekV3Model(nn.Module):
         elif mtp_loss is not None:
             total_loss = mtp_weight * mtp_loss
 
-        # Add MoE load balancing loss with weight (already summed across layers)
+        # Add MoE load balancing loss (already weighted by router_aux_loss_weight in the router)
+        # DO NOT multiply again - that would double-weight the loss!
+        # The router's aux_loss_weight (typically 0.001) is the effective weight.
         if moe_load_balancing_loss is not None and total_loss is not None:
-            total_loss = total_loss + moe_weight * moe_load_balancing_loss
+            total_loss = total_loss + moe_load_balancing_loss
 
         # Build output structure
         class Output:

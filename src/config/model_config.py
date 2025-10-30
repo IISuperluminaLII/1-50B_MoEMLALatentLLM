@@ -67,13 +67,16 @@ class MoEConfig:
     num_expert_segments: int = 1  # Number of segments per expert (1 = no segmentation)
     expert_segment_sizes: Optional[List[int]] = None  # Custom segment sizes (None = equal split)
     segment_routing: str = "independent"  # "independent" or "shared" routing per segment
+                                          # Note: With "independent", capacity is divided across segments
+                                          # for fine-grained load control per DeepSeek-V3 paper
 
     # Shared experts (optional, for stability)
     num_shared_experts: int = 0
     shared_intermediate_size: int = 0
 
     # Routing
-    router_aux_loss_weight: float = 0.001  # Start small; 0.0 for aux-loss-free
+    router_aux_loss_weight: float = 0.001  # Effective aux loss weight (λ_aux); 0.0 for aux-loss-free
+                                            # This is the ONLY aux loss weight - model does not multiply again
     router_temperature: float = 1.0
     router_noise_std: float = 0.1  # Anneal to 0 during training
     router_bias_decay: float = 0.99  # EMA decay for aux-loss-free bias tracking
@@ -177,7 +180,9 @@ class TrainingConfig:
     lm_loss_weight: float = 1.0  # λ_LM: Next-token prediction loss weight
     mtp_loss_weight: float = 0.5  # λ_MTP: Multi-token prediction loss weight (default 0.5)
     mtp_loss_weights: Optional[List[float]] = None  # λ_MTP[d]: Per-depth MTP weights (None = uniform)
-    moe_aux_loss_weight: float = 0.001  # λ_aux: MoE auxiliary loss weight (sum across layers)
+    moe_aux_loss_weight: float = 0.001  # DEPRECATED: Use router_aux_loss_weight in MoEConfig instead
+                                        # This parameter is ignored to prevent double-weighting
+                                        # The router already applies the aux loss weight
 
     # Audio-specific loss weights (for speech-to-speech translation)
     audio_loss_weight: float = 2.0  # λ_audio: Weight for audio token loss (boost audio learning)

@@ -730,7 +730,13 @@ class DeepSeekMoE(nn.Module):
         overflow_tokens = getattr(self, '_overflow_tokens', 0)
         capacity_used = 0.0
         if self.expert_capacity is not None:
-            max_possible_capacity = self.expert_capacity * self.num_experts
+            # Calculate total capacity across all routing targets (experts or segments)
+            if self.use_segmented_experts and self.segment_routing == "independent":
+                num_routing_targets = self.num_experts * self.num_expert_segments
+            else:
+                num_routing_targets = self.num_experts
+
+            max_possible_capacity = self.expert_capacity * num_routing_targets
             actual_tokens_processed = batch_seq - overflow_tokens
             capacity_used = actual_tokens_processed / max_possible_capacity if max_possible_capacity > 0 else 0.0
 
@@ -746,10 +752,23 @@ class DeepSeekMoE(nn.Module):
         }
 
     def set_expert_capacity(self, batch_size: int, seq_len: int):
-        """Set expert capacity based on batch size."""
+        """
+        Set expert capacity based on batch size.
+
+        For segmented experts with independent routing, capacity is divided across segments
+        to ensure fine-grained load control per the DeepSeek-V3 paper.
+        """
         total_tokens = batch_size * seq_len
-        avg_tokens_per_expert = (total_tokens * self.num_experts_per_token) / self.num_experts
+
+        # Calculate number of routing targets (experts or expert segments)
+        if self.use_segmented_experts and self.segment_routing == "independent":
+            num_routing_targets = self.num_experts * self.num_expert_segments
+        else:
+            num_routing_targets = self.num_experts
+
+        # Divide token budget across all routing targets
+        avg_tokens_per_target = (total_tokens * self.num_experts_per_token) / num_routing_targets
         self.expert_capacity = max(
-            int(avg_tokens_per_expert * self.capacity_factor),
+            int(avg_tokens_per_target * self.capacity_factor),
             self.min_expert_capacity
         )
