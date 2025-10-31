@@ -264,6 +264,8 @@ class DeepseekV3Attention(nn.Module):
         position_ids: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         use_cache: bool = False,
+        causal_mask: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
     ) -> DeepseekV3AttentionOutput:
         """
         Forward pass through DeepSeek-V3 attention.
@@ -274,6 +276,8 @@ class DeepseekV3Attention(nn.Module):
             position_ids: Position indices for RoPE
             past_key_value: Cached KV states
             use_cache: Whether to return updated cache
+            causal_mask: Optional causal mask (from FlashMLA fallback)
+            key_padding_mask: Optional padding mask (from FlashMLA fallback)
 
         Returns:
             DeepseekV3AttentionOutput with hidden states and optional cache
@@ -287,19 +291,18 @@ class DeepseekV3Attention(nn.Module):
         # Handle KV cache at latent level for memory efficiency
         if past_key_value is not None:
             # Past KV should be tuple of (k_latent, v_latent)
-            past_k_latent, past_v_latent = past_key_value
-            past_kv_latent = torch.cat([past_k_latent, past_v_latent], dim=-1)
+            # Concatenate along sequence dimension (dim=1), not feature dimension
+            past_kv_latent = past_key_value
+            # Simply concatenate new compressed KV with past latent KV along sequence dim
             kv_latent_with_cache = torch.cat([past_kv_latent, kv_compressed], dim=1)
         else:
             kv_latent_with_cache = kv_compressed
 
         # Update latent cache if needed (before expansion)
         if use_cache:
-            # Store latent KV as tuple (k_latent, v_latent) for compatibility
-            # Split the concatenated kv_latent back into k and v
-            k_latent_cache = kv_latent_with_cache[..., :self.kv_lora_rank]
-            v_latent_cache = kv_latent_with_cache[..., self.kv_lora_rank:]
-            present_key_value = (k_latent_cache, v_latent_cache)
+            # Store the full latent KV for next iteration
+            # This preserves the compact latent representation per DeepSeek-V3 paper
+            present_key_value = kv_latent_with_cache
         else:
             present_key_value = None
 
@@ -362,9 +365,38 @@ class DeepseekV3Attention(nn.Module):
         # Compute attention scores
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.softmax_scale
 
-        # Apply attention mask if provided
+        # Merge all masks (from FlashMLA fallback compatibility)
+        combined_mask = None
+
+        # Handle causal mask (boolean mask from FlashMLA)
+        if causal_mask is not None:
+            # Convert boolean causal mask to additive mask (False -> -inf, True -> 0)
+            causal_additive = torch.where(causal_mask, 0.0, -10000.0)
+            combined_mask = causal_additive
+
+        # Handle key padding mask (boolean mask for padded positions)
+        if key_padding_mask is not None:
+            # key_padding_mask is [batch, seq_len], needs to be [batch, 1, 1, seq_len] for broadcast
+            key_padding_additive = torch.where(
+                key_padding_mask.unsqueeze(1).unsqueeze(2),  # [batch, 1, 1, seq_len]
+                -10000.0,  # Padded positions get large negative
+                0.0        # Non-padded positions get 0
+            )
+            if combined_mask is not None:
+                combined_mask = combined_mask + key_padding_additive
+            else:
+                combined_mask = key_padding_additive
+
+        # Add the original attention_mask if provided
         if attention_mask is not None:
-            attn_scores = attn_scores + attention_mask
+            if combined_mask is not None:
+                combined_mask = combined_mask + attention_mask
+            else:
+                combined_mask = attention_mask
+
+        # Apply the combined mask to attention scores
+        if combined_mask is not None:
+            attn_scores = attn_scores + combined_mask
 
         # Softmax
         attn_probs = F.softmax(attn_scores, dim=-1)

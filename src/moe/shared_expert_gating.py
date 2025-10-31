@@ -158,6 +158,7 @@ class SharedExpertModule(nn.Module):
         self.num_shared_experts = num_shared_experts
         self.residual_connection = residual_connection
         self.scale_shared_output = scale_shared_output
+        self.use_soft_gating = use_soft_gating  # Store the gating flag for forward()
 
         # Gating mechanism
         self.gate = SharedExpertGate(

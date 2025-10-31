@@ -260,23 +260,48 @@ class SFTDataset(Dataset):
         """
         Create labels with prompts masked out.
 
-        Only compute loss on assistant responses.
+        Only compute loss on assistant responses across all turns.
         """
         labels = input_ids.clone()
 
-        # Find response positions
+        # Find all assistant response positions
         response_template_ids = self.tokenizer.encode(
             self.response_template, add_special_tokens=False
         )
 
-        # Mask everything before each response
-        for i in range(len(input_ids)):
-            # Simple approach: look for response template
-            # In practice, would use more sophisticated masking
-            if i > 0 and self._is_response_start(input_ids, i, response_template_ids):
-                # Don't mask from here onwards until next instruction
-                break
-            labels[i] = -100  # Mask token for loss computation
+        # Also find user/system turn templates to identify boundaries
+        user_template_ids = self.tokenizer.encode(
+            "### User:", add_special_tokens=False
+        )
+        system_template_ids = self.tokenizer.encode(
+            "### System:", add_special_tokens=False
+        )
+
+        # Initially mask everything
+        labels[:] = -100
+
+        # Find all assistant response spans and unmask them
+        i = 0
+        while i < len(input_ids):
+            # Check if this is the start of an assistant response
+            if self._is_response_start(input_ids, i, response_template_ids):
+                # Skip the template itself
+                i += len(response_template_ids)
+
+                # Unmask tokens until we hit the next user/system prompt or end
+                while i < len(input_ids):
+                    # Check if we've hit the next user prompt
+                    if self._is_response_start(input_ids, i, user_template_ids):
+                        break
+                    # Check if we've hit the next system prompt
+                    if self._is_response_start(input_ids, i, system_template_ids):
+                        break
+
+                    # This is part of the assistant response, unmask it
+                    labels[i] = input_ids[i]
+                    i += 1
+            else:
+                i += 1
 
         return labels
 

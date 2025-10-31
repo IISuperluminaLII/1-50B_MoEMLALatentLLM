@@ -165,37 +165,58 @@ class DPOTrainer:
 
         Where y_w is chosen response and y_l is rejected response.
         """
-        # Get logprobs from policy model
+        # Get logits from policy model (not using labels to avoid loss computation)
         with torch.cuda.amp.autocast():
             chosen_output = self.model(
                 input_ids=chosen_ids,
                 attention_mask=chosen_mask,
-                labels=chosen_ids,
             )
             rejected_output = self.model(
                 input_ids=rejected_ids,
                 attention_mask=rejected_mask,
-                labels=rejected_ids,
             )
 
-        # Get logprobs from reference model
+        # Get logits from reference model
         with torch.no_grad():
             ref_chosen_output = self.reference_model(
                 input_ids=chosen_ids,
                 attention_mask=chosen_mask,
-                labels=chosen_ids,
             )
             ref_rejected_output = self.reference_model(
                 input_ids=rejected_ids,
                 attention_mask=rejected_mask,
-                labels=rejected_ids,
             )
 
-        # Extract log probabilities
-        chosen_logprobs = -chosen_output.loss
-        rejected_logprobs = -rejected_output.loss
-        ref_chosen_logprobs = -ref_chosen_output.loss
-        ref_rejected_logprobs = -ref_rejected_output.loss
+        # Compute sequence log-probabilities (sum of token log-probs)
+        def get_sequence_logprobs(logits, input_ids, attention_mask):
+            """Compute sequence log-probabilities from logits."""
+            # Shift logits and labels for next-token prediction
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = input_ids[..., 1:].contiguous()
+            shift_mask = attention_mask[..., 1:].contiguous()
+
+            # Get log probabilities
+            log_probs = torch.nn.functional.log_softmax(shift_logits, dim=-1)
+
+            # Gather log probs of actual tokens
+            batch_size, seq_len = shift_labels.shape
+            token_log_probs = torch.gather(
+                log_probs.view(-1, log_probs.size(-1)),
+                1,
+                shift_labels.view(-1).unsqueeze(1)
+            ).view(batch_size, seq_len)
+
+            # Mask and sum to get sequence log-prob
+            masked_log_probs = token_log_probs * shift_mask
+            sequence_log_probs = masked_log_probs.sum(dim=-1)
+
+            return sequence_log_probs
+
+        # Extract sequence log probabilities
+        chosen_logprobs = get_sequence_logprobs(chosen_output.logits, chosen_ids, chosen_mask)
+        rejected_logprobs = get_sequence_logprobs(rejected_output.logits, rejected_ids, rejected_mask)
+        ref_chosen_logprobs = get_sequence_logprobs(ref_chosen_output.logits, chosen_ids, chosen_mask)
+        ref_rejected_logprobs = get_sequence_logprobs(ref_rejected_output.logits, rejected_ids, rejected_mask)
 
         # Compute DPO loss
         chosen_rewards = self.config.beta * (chosen_logprobs - ref_chosen_logprobs)
@@ -481,14 +502,141 @@ class PPOTrainerCustom:
         return advantages, returns
 
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
-        """Single PPO training step."""
-        # Implementation of PPO update
-        # This would include:
-        # 1. Generate trajectories
-        # 2. Compute rewards using reward model
-        # 3. Compute advantages using GAE
-        # 4. Multiple epochs of PPO updates
-        # 5. Clip ratio to prevent large updates
+        """
+        Single PPO training step with proper implementation.
 
-        # Placeholder for now
-        return {"loss": 0.0, "reward": 0.0, "kl": 0.0}
+        Args:
+            batch: Dictionary containing prompts and other data
+
+        Returns:
+            Dictionary of training metrics
+        """
+        prompts = batch["prompts"]
+        batch_size = prompts.shape[0]
+
+        # Generate trajectories with current policy
+        with torch.no_grad():
+            # Generate responses
+            max_new_tokens = self.config.max_new_tokens
+            generated = self.model.generate(
+                prompts,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=self.config.temperature,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
+
+            # Get responses (remove prompt from generated)
+            responses = generated[:, prompts.shape[1]:]
+
+            # Compute rewards using reward model
+            rewards = self.reward_model(generated).squeeze(-1)
+
+            # Get log probabilities from policy and reference models
+            policy_logits = self.model(generated).logits
+            ref_logits = self.reference_model(generated).logits
+
+            # Compute log probs for generated tokens
+            policy_logprobs = torch.nn.functional.log_softmax(policy_logits, dim=-1)
+            ref_logprobs = torch.nn.functional.log_softmax(ref_logits, dim=-1)
+
+            # Gather log probs of actual tokens
+            seq_len = responses.shape[1]
+            response_logprobs = torch.gather(
+                policy_logprobs[:, prompts.shape[1]-1:-1, :],
+                2,
+                responses.unsqueeze(-1)
+            ).squeeze(-1)
+
+            ref_response_logprobs = torch.gather(
+                ref_logprobs[:, prompts.shape[1]-1:-1, :],
+                2,
+                responses.unsqueeze(-1)
+            ).squeeze(-1)
+
+            # Compute KL penalty
+            kl_penalty = (response_logprobs - ref_response_logprobs).sum(dim=1)
+
+            # Compute rewards with KL penalty
+            rewards = rewards - self.config.kl_coef * kl_penalty
+
+            # Get values from value head
+            hidden_states = self.model(generated, output_hidden_states=True).hidden_states[-1]
+            values = self.value_head(hidden_states[:, -1, :]).squeeze(-1)
+
+            # Create masks for done states
+            dones = torch.zeros(batch_size, device=self.device)
+            dones[-1] = 1.0  # Last step is done
+
+            # Compute advantages and returns
+            advantages, returns = self.compute_advantages(rewards, values, dones)
+
+            # Store old log probs for ratio computation
+            old_logprobs = response_logprobs.sum(dim=1)
+
+        # PPO update with multiple epochs
+        total_loss = 0.0
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+
+        for _ in range(self.config.ppo_epochs):
+            # Forward pass with gradient
+            outputs = self.model(generated)
+            new_logits = outputs.logits
+
+            # Compute new log probs
+            new_logprobs_all = torch.nn.functional.log_softmax(new_logits, dim=-1)
+            new_response_logprobs = torch.gather(
+                new_logprobs_all[:, prompts.shape[1]-1:-1, :],
+                2,
+                responses.unsqueeze(-1)
+            ).squeeze(-1)
+            new_logprobs = new_response_logprobs.sum(dim=1)
+
+            # Compute probability ratio
+            ratio = torch.exp(new_logprobs - old_logprobs)
+
+            # Clipped surrogate objective
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1.0 - self.config.clip_range, 1.0 + self.config.clip_range) * advantages
+            policy_loss = -torch.min(surr1, surr2).mean()
+
+            # Value loss
+            new_hidden = self.model(generated, output_hidden_states=True).hidden_states[-1]
+            new_values = self.value_head(new_hidden[:, -1, :]).squeeze(-1)
+            value_loss = torch.nn.functional.mse_loss(new_values, returns)
+
+            # Total loss
+            loss = policy_loss + self.config.value_coef * value_loss
+
+            # Backward pass
+            self.optimizer.zero_grad()
+            self.value_optimizer.zero_grad()
+            loss.backward()
+
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(self.value_head.parameters(), self.config.max_grad_norm)
+
+            # Optimizer steps
+            self.optimizer.step()
+            self.value_optimizer.step()
+
+            total_loss += loss.item()
+            total_policy_loss += policy_loss.item()
+            total_value_loss += value_loss.item()
+
+        # Compute average metrics
+        avg_loss = total_loss / self.config.ppo_epochs
+        avg_policy_loss = total_policy_loss / self.config.ppo_epochs
+        avg_value_loss = total_value_loss / self.config.ppo_epochs
+
+        return {
+            "loss": avg_loss,
+            "policy_loss": avg_policy_loss,
+            "value_loss": avg_value_loss,
+            "reward": rewards.mean().item(),
+            "kl": kl_penalty.mean().item(),
+            "advantages": advantages.mean().item(),
+        }

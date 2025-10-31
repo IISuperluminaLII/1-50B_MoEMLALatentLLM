@@ -396,15 +396,20 @@ class DeepSeekMoE(nn.Module):
         # Use MoEGate for grouped routing or when specific controls are needed
         if use_grouped_routing or topk_method != "greedy":
             from .moe_gate import MoEGate
+            # Create config dict for MoEGate as it expects (config, num_experts, d_model)
+            moe_gate_config = {
+                'n_group': n_group,
+                'topk_group': topk_group,
+                'norm_topk_prob': norm_topk_prob,
+                'routed_scaling_factor': routed_scaling_factor,
+                'topk_method': topk_method,
+                'scoring_func': scoring_func,
+                'aux_loss_weight': aux_loss_weight,  # Include aux loss weight
+            }
             self.router = MoEGate(
-                hidden_size=d_model,
+                config=moe_gate_config,
                 num_experts=num_routing_targets,
-                n_group=n_group,
-                topk_group=topk_group,
-                norm_topk_prob=norm_topk_prob,
-                routed_scaling_factor=routed_scaling_factor,
-                topk_method=topk_method,
-                scoring_func=scoring_func,
+                d_model=d_model,
             )
         # Use DeepSeekV3Router when aux-loss-free mode is enabled (DeepSeek V3 algorithm)
         elif use_aux_loss_free:

@@ -73,6 +73,8 @@ class DolmaDataset(IterableDataset):
         shuffle: bool = True,
         seed: int = 42,
         num_workers: int = 4,
+        rank: int = 0,
+        world_size: int = 1,
     ):
         """
         Initialize Dolma dataset.
@@ -88,6 +90,8 @@ class DolmaDataset(IterableDataset):
             shuffle: Whether to shuffle data
             seed: Random seed for shuffling
             num_workers: Number of workers for data loading
+            rank: Current process rank for distributed training
+            world_size: Total number of processes for distributed training
         """
         self.tokenizer = tokenizer
         self.seq_length = seq_length
@@ -99,6 +103,8 @@ class DolmaDataset(IterableDataset):
         self.shuffle = shuffle
         self.seed = seed
         self.num_workers = num_workers
+        self.rank = rank
+        self.world_size = world_size
 
         # Validate version
         if version not in ["v1_6", "v1_7"]:
@@ -131,8 +137,19 @@ class DolmaDataset(IterableDataset):
                 trust_remote_code=True,
             )
 
+            # CRITICAL FIX: Shard dataset for distributed training
+            if self.world_size > 1:
+                # Each rank gets a unique shard of the data
+                self.dataset = self.dataset.shard(
+                    num_shards=self.world_size,
+                    index=self.rank,
+                    contiguous=True  # Ensure contiguous shards for better performance
+                )
+
             if self.shuffle and self.streaming:
-                self.dataset = self.dataset.shuffle(seed=self.seed, buffer_size=10000)
+                # Use different seed per rank for proper shuffling
+                shuffle_seed = self.seed + self.rank
+                self.dataset = self.dataset.shuffle(seed=shuffle_seed, buffer_size=10000)
         else:
             # v1.6 requires loading and mixing individual sources
             # CRITICAL FIX #27: Add keep_in_memory=False for memory-mapped access!
@@ -148,8 +165,18 @@ class DolmaDataset(IterableDataset):
                     trust_remote_code=True,
                 )
 
+                # CRITICAL FIX: Shard each source dataset for distributed training
+                if self.world_size > 1:
+                    ds = ds.shard(
+                        num_shards=self.world_size,
+                        index=self.rank,
+                        contiguous=True
+                    )
+
                 if self.shuffle and self.streaming:
-                    ds = ds.shuffle(seed=self.seed, buffer_size=10000)
+                    # Use different seed per rank for proper shuffling
+                    shuffle_seed = self.seed + self.rank
+                    ds = ds.shuffle(seed=shuffle_seed, buffer_size=10000)
 
                 datasets.append(ds)
 
@@ -314,7 +341,7 @@ def create_dolma_dataloaders(
     # Pinning memory is optional (defaults to off to avoid PyTorch 2.8 deprecation warnings)
     use_pin_memory = bool(data_config.get("pin_memory", False)) and _CUDA_USABLE
 
-    # Create train dataset
+    # Create train dataset with distributed sharding
     train_dataset = DolmaDataset(
         sources=sources,
         tokenizer=tokenizer,
@@ -326,9 +353,11 @@ def create_dolma_dataloaders(
         shuffle=shuffle,
         seed=seed,
         num_workers=num_workers,
+        rank=rank,
+        world_size=world_size,
     )
 
-    # Create validation dataset (no shuffling)
+    # Create validation dataset (no shuffling) with distributed sharding
     val_dataset = DolmaDataset(
         sources=sources,
         tokenizer=tokenizer,
@@ -340,6 +369,8 @@ def create_dolma_dataloaders(
         shuffle=False,
         seed=seed,
         num_workers=num_workers,
+        rank=rank,
+        world_size=world_size,
     )
 
     # Create dataloaders
