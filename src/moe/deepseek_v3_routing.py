@@ -69,7 +69,8 @@ class DeepSeekV3Router(nn.Module):
         )
 
         # Per-expert bias b_i (Eq. 16)
-        self.expert_bias = nn.Parameter(torch.zeros(num_experts))
+        # Must be a buffer, not a parameter, to exclude from optimizer
+        self.register_buffer('expert_bias', torch.zeros(num_experts))
 
         # Token-to-expert projection for affinities
         self.token_proj = nn.Linear(d_model, d_model, bias=False)
@@ -198,11 +199,12 @@ class DeepSeekV3Router(nn.Module):
                 load_diff = self.expert_load_ema - target_load
 
                 # Smooth update based on load difference
-                bias_update = -self.gamma * torch.sign(load_diff)
-                self.expert_bias.data += bias_update
+                with torch.no_grad():
+                    bias_update = -self.gamma * torch.sign(load_diff)
+                    self.expert_bias += bias_update
 
-                # Clip bias to prevent instability
-                self.expert_bias.data = torch.clamp(self.expert_bias.data, -2.0, 2.0)
+                    # Clip bias to prevent instability
+                    self.expert_bias.clamp_(-2.0, 2.0)
 
         # Compute balance loss (Eq. 17-20)
         balance_loss = None

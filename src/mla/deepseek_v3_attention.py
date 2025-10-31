@@ -116,6 +116,15 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     return q_embed, k_embed
 
 
+def apply_rotary_pos_emb_single(x, cos, sin):
+    """Apply rotary position embeddings to a single tensor."""
+    # Ensure cos/sin have compatible dimensions
+    while cos.dim() < x.dim():
+        cos = cos.unsqueeze(1)
+        sin = sin.unsqueeze(1)
+    return (x * cos) + (rotate_half(x) * sin)
+
+
 class DeepseekV3Attention(nn.Module):
     """
     DeepSeek-V3 Multi-head Latent Attention with NOPE/ROPE splitting.
@@ -256,6 +265,21 @@ class DeepseekV3Attention(nn.Module):
         q_compressed = self.q_a_proj(hidden_states)  # [batch, seq, q_lora_rank]
         kv_compressed = self.kv_a_proj(hidden_states)  # [batch, seq, kv_lora_rank]
 
+        # Handle KV cache at latent level for memory efficiency
+        if past_key_value is not None:
+            # Past KV should be latent compressed tensors
+            past_kv_latent = past_key_value
+            kv_latent_with_cache = torch.cat([past_kv_latent, kv_compressed], dim=1)
+        else:
+            kv_latent_with_cache = kv_compressed
+
+        # Update latent cache if needed (before expansion)
+        if use_cache:
+            # Store latent KV for efficiency - this is the key fix!
+            present_key_value = kv_latent_with_cache
+        else:
+            present_key_value = None
+
         # Generate queries with NOPE/ROPE components
         # Full Q projection
         q = self.q_b_proj(q_compressed)  # [batch, seq, num_heads * q_head_dim]
@@ -268,44 +292,41 @@ class DeepseekV3Attention(nn.Module):
         # Extract ROPE component from Q
         q_rope = q[..., :self.qk_rope_head_dim]
 
+        # Now expand cached KV from latent space
         # Generate keys with NOPE/ROPE components
-        k = self.k_b_proj(kv_compressed)  # [batch, seq, num_heads * q_head_dim]
-        k = k.view(batch_size, seq_len, self.num_heads, self.q_head_dim)
+        k = self.k_b_proj(kv_latent_with_cache)  # [batch, full_seq, num_heads * q_head_dim]
+        full_seq_len = kv_latent_with_cache.shape[1]
+        k = k.view(batch_size, full_seq_len, self.num_heads, self.q_head_dim)
 
         # Separate NOPE component for K
-        k_nope = self.k_nope_proj(kv_compressed)
-        k_nope = k_nope.view(batch_size, seq_len, self.num_heads, self.qk_nope_head_dim)
+        k_nope = self.k_nope_proj(kv_latent_with_cache)
+        k_nope = k_nope.view(batch_size, full_seq_len, self.num_heads, self.qk_nope_head_dim)
 
         # Extract ROPE component from K
         k_rope = k[..., :self.qk_rope_head_dim]
 
         # Generate values
-        v = self.v_proj(kv_compressed)  # [batch, seq, num_heads * v_head_dim]
-        v = v.view(batch_size, seq_len, self.num_heads, self.v_head_dim)
+        v = self.v_proj(kv_latent_with_cache)  # [batch, full_seq, num_heads * v_head_dim]
+        v = v.view(batch_size, full_seq_len, self.num_heads, self.v_head_dim)
 
         # Apply RoPE to ROPE components
         if position_ids is None:
             position_ids = torch.arange(seq_len, device=hidden_states.device)
 
+        # Apply RoPE for all positions (including cached)
+        all_position_ids = torch.arange(full_seq_len, device=hidden_states.device)
+        cos_all, sin_all = self.rotary_emb.forward(all_position_ids, full_seq_len)
         cos, sin = self.rotary_emb.forward(position_ids, seq_len)
-        q_rope, k_rope = apply_rotary_pos_emb(q_rope, k_rope, cos, sin)
+
+        # Apply RoPE to queries (current positions only)
+        q_rope = apply_rotary_pos_emb_single(q_rope, cos, sin)
+
+        # Apply RoPE to keys (all positions including cache)
+        k_rope = apply_rotary_pos_emb_single(k_rope, cos_all, sin_all)
 
         # Combine NOPE and ROPE components
         q = torch.cat([q_nope, q_rope], dim=-1)
         k = torch.cat([k_nope, k_rope], dim=-1)
-
-        # Handle KV cache
-        if past_key_value is not None:
-            past_k, past_v = past_key_value
-            k = torch.cat([past_k, k], dim=1)
-            v = torch.cat([past_v, v], dim=1)
-
-        # Update cache if needed
-        if use_cache:
-            # Store compressed KV for efficiency
-            present_key_value = (k, v)
-        else:
-            present_key_value = None
 
         # Transpose for attention computation
         # [batch, num_heads, seq_len, head_dim]

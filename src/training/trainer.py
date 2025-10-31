@@ -99,6 +99,25 @@ class DeepSeekV3Trainer:
         # Determine device from model
         self.device = next(model.parameters()).device
 
+        # Setup mixed precision training
+        self.use_amp = False
+        self.scaler = None
+        self.amp_dtype = torch.float32
+
+        # Check if precision setting exists in config
+        precision = getattr(config.training, 'precision', 'fp32')
+        if precision in ["fp16", "bf16", "mixed"]:
+            if torch.cuda.is_available():
+                self.use_amp = True
+                if precision == "bf16":
+                    self.amp_dtype = torch.bfloat16
+                else:
+                    self.amp_dtype = torch.float16
+                self.scaler = torch.cuda.amp.GradScaler(enabled=(precision == "fp16"))
+                self.log(f"Enabled AMP with {precision} precision")
+            else:
+                self.log(f"[WARNING] Mixed precision {precision} requested but CUDA not available, using FP32")
+
     def train(self):
         """Main training loop."""
         self.log(f"Starting training for {self.config.training.train_steps} steps")
@@ -110,6 +129,9 @@ class DeepSeekV3Trainer:
         self.model.train()
         start_time = time.time()
 
+        # Track tokens across micro-batches
+        self.micro_batch_tokens = []
+
         while self.step < self.config.training.train_steps:
             for batch in self.train_dataloader:
                 if self.step >= self.config.training.train_steps:
@@ -118,25 +140,40 @@ class DeepSeekV3Trainer:
                 # Training step
                 metrics = self.train_step(batch)
 
-                # Update token count from actual batch size (not global_batch_size estimate)
-                # This correctly handles micro-batches and padding
-                tokens_this_step = metrics["tokens_this_step"]
-                self.total_tokens_processed += tokens_this_step
+                # Check if this was a partial micro-batch (accumulating gradients)
+                if "accumulating" in metrics and metrics["accumulating"]:
+                    # Just accumulating, don't log/checkpoint/increment step
+                    self.micro_batch_tokens.append(metrics["tokens_this_step"])
+                    continue
 
-                # Logging
+                # Optimizer step occurred, now we can update everything
+                # Update token count with sum of all micro-batch tokens
+                if self.micro_batch_tokens:
+                    total_batch_tokens = sum(self.micro_batch_tokens) + metrics["tokens_this_step"]
+                    self.micro_batch_tokens = []
+                else:
+                    # Single batch (no accumulation)
+                    total_batch_tokens = metrics["tokens_this_step"]
+
+                self.total_tokens_processed += total_batch_tokens
+                # Update metrics with correct token count
+                metrics["tokens_this_step"] = total_batch_tokens
+
+                # Logging (only after optimizer step)
                 if self.step % self.config.training.log_interval == 0:
                     self._log_metrics(metrics, start_time)
 
-                # Evaluation
+                # Evaluation (only after optimizer step)
                 if (self.val_dataloader is not None and
                     self.step % self.config.training.eval_interval == 0 and
                     self.step > 0):
                     self.evaluate()
 
-                # Checkpointing
+                # Checkpointing (only after optimizer step)
                 if self.step % self.config.training.save_interval == 0 and self.step > 0:
                     self.save_checkpoint()
 
+                # Increment step only after optimizer update
                 self.step += 1
 
             self.epoch += 1
@@ -187,17 +224,19 @@ class DeepSeekV3Trainer:
         # Move batch to device
         batch = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in batch.items()}
 
-        # Forward pass
-        outputs = self.model(**batch)
-
-        # Compute loss
-        # NOTE: outputs.loss already includes:
-        #   1. LM loss (cross-entropy)
-        #   2. MTP loss (if mtp_labels provided)
-        #   3. MoE load_balancing_loss (if MoE layers exist)
-        # All losses are combined in DeepSeekV3Model.forward(), so we use outputs.loss directly
-        # without adding auxiliary losses again (which would cause double-counting)
-        loss = outputs.loss
+        # Forward pass with mixed precision
+        if self.use_amp:
+            with torch.cuda.amp.autocast(dtype=self.amp_dtype):
+                outputs = self.model(**batch)
+                # NOTE: outputs.loss already includes:
+                #   1. LM loss (cross-entropy)
+                #   2. MTP loss (if mtp_labels provided)
+                #   3. MoE load_balancing_loss (if MoE layers exist)
+                # All losses are combined in DeepSeekV3Model.forward()
+                loss = outputs.loss
+        else:
+            outputs = self.model(**batch)
+            loss = outputs.loss
 
         # Scale loss for gradient accumulation
         loss = loss / self.accumulation_steps
@@ -207,7 +246,11 @@ class DeepSeekV3Trainer:
         if self.accumulation_counter == 0:
             self.optimizer.zero_grad()
 
-        loss.backward()
+        if self.use_amp and self.scaler is not None:
+            # Scale loss and backward with AMP
+            self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         # Track accumulated loss (unscaled for logging)
         self.accumulated_loss += outputs.loss.item()
@@ -215,6 +258,10 @@ class DeepSeekV3Trainer:
 
         # Check if we should update weights
         if self.accumulation_counter >= self.accumulation_steps:
+            if self.use_amp and self.scaler is not None:
+                # Unscale gradients before clipping
+                self.scaler.unscale_(self.optimizer)
+
             # Gradient clipping
             if self.config.training.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(
@@ -223,7 +270,12 @@ class DeepSeekV3Trainer:
                 )
 
             # Optimizer step
-            self.optimizer.step()
+            if self.use_amp and self.scaler is not None:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+
             self.lr_scheduler.step()
 
             # Reset accumulation state
@@ -245,7 +297,7 @@ class DeepSeekV3Trainer:
             "lr": self.lr_scheduler.get_last_lr()[0],
             "step": self.step,
             "tokens_processed": self.total_tokens_processed,
-            "tokens_this_step": tokens_this_step * self.accumulation_steps,  # Total tokens in effective batch
+            "tokens_this_step": tokens_this_step,  # This micro-batch's tokens (main loop will sum)
             "accumulation_steps": self.accumulation_steps,
             "effective_batch_size": self.micro_batch_size * self.accumulation_steps * self.world_size,
         }

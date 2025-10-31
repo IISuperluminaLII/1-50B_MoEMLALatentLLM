@@ -199,21 +199,31 @@ def create_dataloaders(config: DeepSeekV3Config, rank: int, world_size: int):
     from src.data.dolma_loader import DolmaDataset
     from torch.utils.data import DataLoader
 
-    # Initialize tokenizer - Use official DeepSeek-V3 tokenizer
+    # Initialize tokenizer - MUST use official DeepSeek-V3 tokenizer
     print("Loading tokenizer...")
     try:
-        # Try DeepSeek-V3 first (most recent)
+        # DeepSeek-V3 is required for proper vocabulary (128k vocab size)
         tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-V3-Base")
         print("Loaded DeepSeek-V3 tokenizer")
-    except:
-        try:
-            # Fallback to DeepSeek-V2
-            tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-llm-7b-base")
-            print("Loaded DeepSeek-V2 tokenizer (fallback)")
-        except:
-            # Last resort: LLaMA-2
-            print("DeepSeek tokenizers not available, using LLaMA-2 tokenizer as fallback")
-            tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+
+        # Validate vocabulary size
+        expected_vocab_size = 128000  # Per paper
+        if tokenizer.vocab_size < expected_vocab_size - 1000 or tokenizer.vocab_size > expected_vocab_size + 1280:
+            raise ValueError(
+                f"Tokenizer vocab size {tokenizer.vocab_size} doesn't match "
+                f"expected DeepSeek-V3 range (~{expected_vocab_size}). "
+                f"Please ensure you're using the correct tokenizer."
+            )
+    except Exception as e:
+        print("\n" + "="*80)
+        print("ERROR: DeepSeek-V3 tokenizer is required for training")
+        print("="*80)
+        print(f"Failed to load tokenizer: {e}")
+        print("\nPlease ensure you have access to 'deepseek-ai/DeepSeek-V3-Base'")
+        print("The model requires the exact DeepSeek-V3 vocabulary for proper training.")
+        print("Using a different tokenizer will break vocabulary matching and model performance.")
+        import sys
+        sys.exit(1)
 
     # Create train dataset
     print("\n" + "="*80)
