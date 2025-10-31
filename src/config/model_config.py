@@ -87,6 +87,14 @@ class MoEConfig:
     balance_loss_type: str = "entropy"  # entropy, load, or none
     min_expert_capacity: int = 4
 
+    # Grouped routing controls (DeepSeek V3 NoAux token-choice)
+    n_group: int = 1  # Number of routing groups
+    topk_group: int = 8  # Experts per group (total = n_group * topk_group)
+    norm_topk_prob: bool = True  # Normalize routing probabilities
+    routed_scaling_factor: float = 1.0  # Scale factor for routed outputs
+    topk_method: str = "greedy"  # "greedy" or "group_limited_greedy"
+    scoring_func: str = "softmax"  # "softmax" or "sigmoid"
+
     # DeepEP settings
     use_deep_ep: bool = True
     deep_ep_fp8: bool = True
@@ -260,7 +268,7 @@ class DeepSeekV3Config:
 
     # Model architecture
     num_layers: int = 61
-    vocab_size: int = 128000
+    vocab_size: int = 129280  # Official DeepSeek-V3 vocabulary size
 
     # Normalization
     norm_type: str = "rmsnorm"

@@ -266,32 +266,11 @@ class DeepSeekV3Model(nn.Module):
         self.num_layers = config.num_layers
         self.mtp_tokens = getattr(config.training, "mtp_tokens", 2)  # fallback
 
-        # Use UnifiedEmbedding to cover full vocabulary (128k tokens)
-        # This fixes the issue where tokens above 51,540 had zero embeddings
-        if config.vocab_size > VOCAB_SIZE:
-            # Use unified embeddings for full vocab coverage
-            self.unified_embed = UnifiedEmbedding(
-                vocab_size=config.vocab_size,
-                d_model=d_model,
-                vocab_config=getattr(config, 'vocab_config', None),
-                init_std=config.init_method_std
-            )
-            self.use_unified_embedding = True
-        else:
-            # Legacy mode: Separate token embeddings for different modalities
-            # This prevents audio tokens from getting text-optimized representations
-            self.text_embed = nn.Embedding(50000, d_model)  # Text tokens [0, 50000)
-            self.mulaw_audio_embed = nn.Embedding(256, d_model)  # μ-law audio [50000, 50256)
-            self.special_embed = nn.Embedding(6, d_model)  # Special tokens [50256, 50262)
-            self.spec_audio_embed = nn.Embedding(1024, d_model)  # Spec audio [50262, 51286)
-            self.phoneme_embed = nn.Embedding(254, d_model)  # Phoneme tokens [51286, 51540)
-
-            # Initialize audio embeddings with scaled variance for acoustic preservation
-            # Audio tokens need larger initialization to preserve fine-grained details
-            nn.init.normal_(self.mulaw_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
-            nn.init.normal_(self.spec_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
-            nn.init.normal_(self.phoneme_embed.weight, mean=0.0, std=config.init_method_std)
-            self.use_unified_embedding = False
+        # Use single shared embedding table as in official DeepSeek-V3
+        # This embedding is tied to the LM head for weight sharing
+        self.token_embedding = nn.Embedding(config.vocab_size, d_model)
+        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=config.init_method_std)
+        self.use_unified_embedding = False  # Using single shared table
 
         # Internal flag for deprecation tracking
         self._token_embed_deprecated = True
@@ -301,13 +280,19 @@ class DeepSeekV3Model(nn.Module):
         # This reduces communication overhead and provides dense computation
         self.blocks = nn.ModuleList()
 
-        # Determine layer pattern from config or use default
-        # Default: Every 3rd layer is attention-dense (MLA-only)
-        dense_layer_interval = getattr(config, "dense_layer_interval", 3)
+        # Determine layer pattern from config following official DeepSeek-V3 spec
+        # Default: First 3 layers are dense (MLA-only), then all subsequent are MoE
+        first_k_dense_replace = getattr(config, "first_k_dense_replace", 3)
+        moe_layer_freq = getattr(config, "moe_layer_freq", 1)  # 1 means every layer after first_k is MoE
 
         for layer_idx in range(self.num_layers):
-            # First layer and every Nth layer is attention-dense
-            is_dense_layer = (layer_idx == 0) or (layer_idx % dense_layer_interval == 0)
+            # First k layers are dense, then MoE based on frequency
+            if layer_idx < first_k_dense_replace:
+                is_dense_layer = True
+            else:
+                # After first k layers, use MoE based on frequency
+                # moe_layer_freq=1 means every layer is MoE
+                is_dense_layer = ((layer_idx - first_k_dense_replace) % moe_layer_freq) != 0
 
             if is_dense_layer:
                 block = MLAOnlyBlock(
@@ -378,15 +363,10 @@ class DeepSeekV3Model(nn.Module):
 
     def _get_token_embeddings(self, input_ids):
         """
-        Route tokens to appropriate embedding tables based on token ID ranges.
+        Get embeddings from the single shared embedding table.
 
-        Token ranges:
-        - Text: [0, 50000)
-        - μ-law audio: [50000, 50256)
-        - Special: [50256, 50262)
-        - Spec audio: [50262, 51286)
-        - Phoneme: [51286, 51540)
-        - Reserved (if unified): [51540, 128000)
+        This uses the official DeepSeek-V3 approach with a single
+        embedding matrix shared with the LM head.
 
         Args:
             input_ids: [batch, seq_len] token IDs
@@ -394,9 +374,8 @@ class DeepSeekV3Model(nn.Module):
         Returns:
             embeddings: [batch, seq_len, d_model]
         """
-        # Use unified embedding if available (for full 128k vocab coverage)
-        if self.use_unified_embedding:
-            return self.unified_embed(input_ids)
+        # Use the single shared embedding table for all tokens
+        return self.token_embedding(input_ids)
 
         # Legacy mode: Process each modality separately
         batch_size, seq_len = input_ids.shape

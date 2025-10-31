@@ -215,9 +215,15 @@ class DeepSeekV3Router(nn.Module):
             # P_e = average probability of selecting expert e
 
             # Compute f_e: fraction assigned to each expert
-            f_e = torch.zeros(self.num_experts, device=hidden_states.device)
-            for e in range(self.num_experts):
-                f_e[e] = (expert_indices == e).float().sum() / batch_seq
+            # Must divide by total_selections (batch_seq * K) so fractions sum to 1
+            total_selections = batch_seq * self.num_experts_per_token
+            if total_selections == 0:
+                # Guard against division by zero
+                f_e = torch.zeros(self.num_experts, device=hidden_states.device)
+            else:
+                f_e = torch.zeros(self.num_experts, device=hidden_states.device)
+                for e in range(self.num_experts):
+                    f_e[e] = (expert_indices == e).float().sum() / total_selections
 
             # Compute P_e: average selection probability
             P_e = selection_scores.mean(dim=0)

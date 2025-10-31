@@ -364,6 +364,13 @@ class DeepSeekMoE(nn.Module):
         num_expert_segments: int = 4,  # DeepSeek-V3 default: fine-grained with 4 segments
         expert_segment_sizes: Optional[list] = None,
         segment_routing: str = "independent",
+        # Grouped routing controls
+        n_group: int = 1,
+        topk_group: int = None,  # If None, uses num_experts_per_token
+        norm_topk_prob: bool = True,
+        routed_scaling_factor: float = 1.0,
+        topk_method: str = "greedy",
+        scoring_func: str = "softmax",
     ):
         super().__init__()
 
@@ -380,8 +387,27 @@ class DeepSeekMoE(nn.Module):
         # If using segmented routing, router needs to output logits for segments
         num_routing_targets = num_experts * num_expert_segments if segment_routing == "independent" else num_experts
 
+        # Determine if grouped routing is requested
+        if topk_group is None:
+            topk_group = num_experts_per_token
+
+        use_grouped_routing = (n_group > 1) or (topk_group != num_experts_per_token)
+
+        # Use MoEGate for grouped routing or when specific controls are needed
+        if use_grouped_routing or topk_method != "greedy":
+            from .moe_gate import MoEGate
+            self.router = MoEGate(
+                hidden_size=d_model,
+                num_experts=num_routing_targets,
+                n_group=n_group,
+                topk_group=topk_group,
+                norm_topk_prob=norm_topk_prob,
+                routed_scaling_factor=routed_scaling_factor,
+                topk_method=topk_method,
+                scoring_func=scoring_func,
+            )
         # Use DeepSeekV3Router when aux-loss-free mode is enabled (DeepSeek V3 algorithm)
-        if use_aux_loss_free:
+        elif use_aux_loss_free:
             self.router = DeepSeekV3Router(
                 num_experts=num_routing_targets,
                 d_model=d_model,
