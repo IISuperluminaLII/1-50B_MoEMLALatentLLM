@@ -20,6 +20,14 @@ wheels/
 .installed.cfg
 *.egg
 
+# Test files in root directory
+/test*.py
+/test_*.py
+
+# Markdown files in root (except README)
+/*.md
+!README.md
+
 # Virtual environments
 venv/
 ENV/
