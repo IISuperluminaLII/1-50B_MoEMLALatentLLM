@@ -20,7 +20,7 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.model.deepseek_v3_model import DeepSeekV3Model
-from src.config.model_config import DeepSeekConfig
+from src.config.model_config import DeepSeekV3Config
 from src.alignment.sft_trainer import SFTTrainer, SFTConfig
 from src.alignment.preference_optimization import (
     DPOTrainer, DPOConfig,

@@ -462,8 +462,8 @@ class DeepSeekMoE(nn.Module):
                 shared_intermediate_size=shared_intermediate_size,
                 gating_temperature=getattr(self, 'gating_temperature', router_temperature),
                 gating_dropout=getattr(self, 'gating_dropout', 0.0),
-                use_soft_gating=True,  # DeepSeek-V3 uses soft gating for shared experts
-                normalize_gates=True,
+                use_soft_gating=False,  # DeepSeek-V3 paper: shared experts are unconditional
+                normalize_gates=False,
                 residual_connection=False,  # MoE layer already has residual
                 scale_shared_output=False,  # DeepSeek-V3 uses additive combination, not averaged
             )

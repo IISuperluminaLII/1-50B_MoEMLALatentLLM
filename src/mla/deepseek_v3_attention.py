@@ -199,6 +199,13 @@ class DeepseekV3Attention(nn.Module):
             bias=False
         )
 
+        # Dedicated RoPE projection for Q (per DeepSeek-V3 paper spec)
+        self.q_rope_proj = nn.Linear(
+            self.q_lora_rank,
+            self.num_heads * self.qk_rope_head_dim,
+            bias=False
+        )
+
         # Key-Value projections with LoRA compression
         # KV: hidden -> kv_lora_rank (shared compression)
         self.kv_a_proj = nn.Linear(self.hidden_size, self.kv_lora_rank, bias=False)
@@ -214,6 +221,13 @@ class DeepseekV3Attention(nn.Module):
         self.k_nope_proj = nn.Linear(
             self.kv_lora_rank,
             self.num_heads * self.qk_nope_head_dim,
+            bias=False
+        )
+
+        # Dedicated RoPE projection for K (per DeepSeek-V3 paper spec)
+        self.k_rope_proj = nn.Linear(
+            self.kv_lora_rank,
+            self.num_heads * self.qk_rope_head_dim,
             bias=False
         )
 
@@ -272,16 +286,20 @@ class DeepseekV3Attention(nn.Module):
 
         # Handle KV cache at latent level for memory efficiency
         if past_key_value is not None:
-            # Past KV should be latent compressed tensors
-            past_kv_latent = past_key_value
+            # Past KV should be tuple of (k_latent, v_latent)
+            past_k_latent, past_v_latent = past_key_value
+            past_kv_latent = torch.cat([past_k_latent, past_v_latent], dim=-1)
             kv_latent_with_cache = torch.cat([past_kv_latent, kv_compressed], dim=1)
         else:
             kv_latent_with_cache = kv_compressed
 
         # Update latent cache if needed (before expansion)
         if use_cache:
-            # Store latent KV for efficiency - this is the key fix!
-            present_key_value = kv_latent_with_cache
+            # Store latent KV as tuple (k_latent, v_latent) for compatibility
+            # Split the concatenated kv_latent back into k and v
+            k_latent_cache = kv_latent_with_cache[..., :self.kv_lora_rank]
+            v_latent_cache = kv_latent_with_cache[..., self.kv_lora_rank:]
+            present_key_value = (k_latent_cache, v_latent_cache)
         else:
             present_key_value = None
 
@@ -294,8 +312,9 @@ class DeepseekV3Attention(nn.Module):
         q_nope = self.q_nope_proj(q_compressed)
         q_nope = q_nope.view(batch_size, seq_len, self.num_heads, self.qk_nope_head_dim)
 
-        # Extract ROPE component from Q
-        q_rope = q[..., :self.qk_rope_head_dim]
+        # Dedicated RoPE component for Q (not extracted from full Q)
+        q_rope = self.q_rope_proj(q_compressed)
+        q_rope = q_rope.view(batch_size, seq_len, self.num_heads, self.qk_rope_head_dim)
 
         # Now expand cached KV from latent space
         # Generate keys with NOPE/ROPE components
@@ -307,8 +326,9 @@ class DeepseekV3Attention(nn.Module):
         k_nope = self.k_nope_proj(kv_latent_with_cache)
         k_nope = k_nope.view(batch_size, full_seq_len, self.num_heads, self.qk_nope_head_dim)
 
-        # Extract ROPE component from K
-        k_rope = k[..., :self.qk_rope_head_dim]
+        # Dedicated RoPE component for K (not extracted from full K)
+        k_rope = self.k_rope_proj(kv_latent_with_cache)
+        k_rope = k_rope.view(batch_size, full_seq_len, self.num_heads, self.qk_rope_head_dim)
 
         # Generate values
         v = self.v_proj(kv_latent_with_cache)  # [batch, full_seq, num_heads * v_head_dim]

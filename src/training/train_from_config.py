@@ -317,6 +317,59 @@ def main():
     lr_scheduler = create_lr_scheduler(optimizer, config)
     print("✓ Optimizer and scheduler created")
 
+    # Initialize DeepSpeed if requested
+    if args.deepspeed:
+        try:
+            import deepspeed
+            print("\n🚀 Initializing DeepSpeed...")
+
+            # Create DeepSpeed config if not provided
+            if args.deepspeed_config:
+                ds_config = args.deepspeed_config
+            else:
+                # Generate DeepSpeed config from our config
+                ds_config = {
+                    "train_micro_batch_size_per_gpu": config.model_config.training.micro_batch_size,
+                    "gradient_accumulation_steps": config.model_config.training.global_batch_size //
+                                                    (config.model_config.training.micro_batch_size * world_size),
+                    "gradient_clipping": config.model_config.training.grad_clip,
+                    "steps_per_print": config.logging_config.log_interval,
+                    "zero_optimization": {
+                        "stage": config.distributed_config.zero_stage,
+                        "offload_optimizer": {
+                            "device": "cpu" if config.distributed_config.zero_offload else "none",
+                        },
+                        "overlap_comm": config.distributed_config.overlap_grad_reduce,
+                    },
+                    "fp16": {
+                        "enabled": config.model_config.training.use_fp16,
+                    },
+                    "bf16": {
+                        "enabled": config.model_config.training.use_bf16,
+                    },
+                }
+
+            # Initialize model with DeepSpeed
+            model, optimizer, train_loader, lr_scheduler = deepspeed.initialize(
+                model=model,
+                optimizer=optimizer,
+                model_parameters=model.parameters(),
+                training_data=train_loader.dataset,
+                lr_scheduler=lr_scheduler,
+                config=ds_config,
+            )
+            print("✓ DeepSpeed initialized")
+            print(f"  ZeRO Stage: {config.distributed_config.zero_stage}")
+            print(f"  Gradient Accumulation: {ds_config['gradient_accumulation_steps']}")
+
+        except ImportError:
+            print("[ERROR] DeepSpeed requested but not installed!")
+            print("Please install DeepSpeed: pip install deepspeed")
+            sys.exit(1)
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize DeepSpeed: {e}")
+            sys.exit(1)
+
     # Create trainer
     print("\n🚀 Initializing trainer...")
     output_dir = Path(config.output_dir)

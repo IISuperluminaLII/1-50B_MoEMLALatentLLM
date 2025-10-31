@@ -225,8 +225,9 @@ class DeepSeekV3Router(nn.Module):
                 for e in range(self.num_experts):
                     f_e[e] = (expert_indices == e).float().sum() / total_selections
 
-            # Compute P_e: average selection probability
-            P_e = selection_scores.mean(dim=0)
+            # Compute P_e: average selection probability using UNBIASED gate scores
+            # Per DeepSeek-V3 Eq. 17-20, we need unbiased probabilities
+            P_e = gate_scores.mean(dim=0)
 
             # Balance loss (scaled by E/K as in paper)
             balance_loss = self.alpha * (self.num_experts / self.num_experts_per_token) * (f_e * P_e).sum()

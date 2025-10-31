@@ -22,10 +22,24 @@ from ..config.model_config import (
 class DataConfig:
     """Data configuration from JSON."""
     dataset_name: str
-    dataset_version: str
     cache_dir: Optional[str]
     preprocessing: Dict[str, Any]
-    sources: list
+    # Optional fields that may or may not be present
+    version: Optional[str] = None  # Allow both version and dataset_version
+    dataset_version: Optional[str] = None
+    sources: Optional[list] = None
+    # Fields from generate_configs.py
+    chinchilla_tokens: Optional[int] = None
+    pipeline: Optional[Dict[str, Any]] = None
+    deduplication: Optional[Dict[str, Any]] = None
+    quality_filter: Optional[Dict[str, Any]] = None
+    heuristic_filters: Optional[Dict[str, Any]] = None
+    ranking_filter: Optional[Dict[str, Any]] = None
+    domain_mixer: Optional[Dict[str, Any]] = None
+    # Comment fields (ignored but allowed)
+    _comment_version: Optional[str] = None
+    _comment_chinchilla: Optional[str] = None
+    _comment_composition: Optional[str] = None
 
 
 @dataclass
@@ -166,8 +180,16 @@ class ConfigLoader:
         if "dense_layer_interval" in model_dict:
             model_config.dense_layer_interval = model_dict["dense_layer_interval"]
 
-        # Parse data config
-        data_config = DataConfig(**config_dict["data"])
+        # Parse data config (handle both version and dataset_version)
+        data_dict = config_dict["data"].copy()
+
+        # Ensure we have dataset_version if only version is provided
+        if "version" in data_dict and "dataset_version" not in data_dict:
+            data_dict["dataset_version"] = data_dict["version"]
+        elif "dataset_version" in data_dict and "version" not in data_dict:
+            data_dict["version"] = data_dict["dataset_version"]
+
+        data_config = DataConfig(**data_dict)
 
         # Parse distributed config
         distributed_config = DistributedConfig(**distributed_dict)

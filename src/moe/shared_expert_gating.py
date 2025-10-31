@@ -224,8 +224,12 @@ class SharedExpertModule(nn.Module):
             # Get expert output
             expert_out = expert(reshaped_hidden)  # [batch*seq, d_model]
 
-            # Apply gating weight
-            gated_out = expert_out * gate_weights[..., i:i+1]
+            # Per DeepSeek-V3 paper: shared experts are unconditional (no gating)
+            # Only apply gating if explicitly enabled for experimentation
+            if self.use_soft_gating:
+                gated_out = expert_out * gate_weights[..., i:i+1]
+            else:
+                gated_out = expert_out
 
             expert_outputs.append(gated_out)
 
