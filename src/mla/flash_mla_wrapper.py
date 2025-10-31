@@ -6,9 +6,10 @@ https://github.com/deepseek-ai/FlashMLA
 """
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
 import logging
+from .mla_observability import MLAObservabilityModule, MLACacheManager
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ class MultiHeadLatentAttention(nn.Module):
         use_flash_mla: bool = True,
         max_context_length: int = 128000,
         rope_theta: float = 10000.0,
+        enable_observability: bool = True,
+        cache_strategy: str = "adaptive",
+        cache_size_mb: float = 1024.0,
     ):
         super().__init__()
 
@@ -61,6 +65,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.d_latent = d_latent
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads
+        self.enable_observability = enable_observability
 
         # Validate dimensions
         if d_latent >= d_model:
@@ -92,6 +97,26 @@ class MultiHeadLatentAttention(nn.Module):
         # RoPE embeddings
         self.rope_theta = rope_theta
         self._init_rope()
+
+        # Observability and cache management
+        if enable_observability:
+            self.observability = MLAObservabilityModule(
+                d_model=d_model,
+                d_latent=d_latent,
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                cache_strategy=cache_strategy,
+                cache_size_mb=cache_size_mb,
+                enable_profiling=True,
+            )
+            self.cache_manager = MLACacheManager(
+                max_cache_size_mb=cache_size_mb,
+                eviction_policy="lru",
+                compression_enabled=True,
+            )
+        else:
+            self.observability = None
+            self.cache_manager = None
 
     def _init_weights(self):
         """Initialize weights for numerical stability."""
@@ -202,11 +227,31 @@ class MultiHeadLatentAttention(nn.Module):
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim)
 
         # KV compression to latent space
-        kv_latent = self.kv_compress(hidden_states)  # [batch, seq, d_latent]
+        if self.observability:
+            kv_latent = self.observability.profile_operation(
+                "kv_compression",
+                self.kv_compress,
+                hidden_states
+            )
+        else:
+            kv_latent = self.kv_compress(hidden_states)  # [batch, seq, d_latent]
+
+        # Track compression metrics
+        if self.observability and self.training:
+            # Compute original KV size (before compression)
+            original_kv = torch.cat([
+                hidden_states.unsqueeze(2).expand(-1, -1, 2, self.num_kv_heads, self.head_dim),
+            ], dim=2).contiguous()
+            compressed_kv = kv_latent.unsqueeze(2).expand(-1, -1, 2, -1)
+            self.observability.compute_compression_metrics(original_kv, compressed_kv)
 
         # Expand latent to full K/V
-        k = self.k_expand(kv_latent)
-        v = self.v_expand(kv_latent)
+        if self.observability:
+            k = self.observability.profile_operation("k_expansion", self.k_expand, kv_latent)
+            v = self.observability.profile_operation("v_expansion", self.v_expand, kv_latent)
+        else:
+            k = self.k_expand(kv_latent)
+            v = self.v_expand(kv_latent)
 
         k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)

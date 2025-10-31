@@ -359,7 +359,7 @@ class DeepSeekMoE(nn.Module):
         router_temperature: float = 1.0,
         router_noise_std: float = 0.1,
         min_expert_capacity: int = 4,
-        num_expert_segments: int = 1,
+        num_expert_segments: int = 4,  # DeepSeek-V3 default: fine-grained with 4 segments
         expert_segment_sizes: Optional[list] = None,
         segment_routing: str = "independent",
     ):
