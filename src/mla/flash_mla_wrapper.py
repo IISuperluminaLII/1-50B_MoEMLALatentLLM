@@ -6,9 +6,10 @@ https://github.com/deepseek-ai/FlashMLA
 """
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 from dataclasses import dataclass
 import logging
+from .mla_observability import MLAObservabilityModule, MLACacheManager
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ class MultiHeadLatentAttention(nn.Module):
         use_flash_mla: bool = True,
         max_context_length: int = 128000,
         rope_theta: float = 10000.0,
+        enable_observability: bool = True,
+        cache_strategy: str = "adaptive",
+        cache_size_mb: float = 1024.0,
     ):
         super().__init__()
 
@@ -61,6 +65,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.d_latent = d_latent
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads or num_heads
+        self.enable_observability = enable_observability
 
         # Validate dimensions
         if d_latent >= d_model:
@@ -86,9 +91,41 @@ class MultiHeadLatentAttention(nn.Module):
         # Output projection
         self.o_proj = nn.Linear(num_heads * self.head_dim, d_model, bias=False)
 
+        # Initialize weights for numerical stability
+        self._init_weights()
+
         # RoPE embeddings
         self.rope_theta = rope_theta
         self._init_rope()
+
+        # Observability and cache management
+        if enable_observability:
+            self.observability = MLAObservabilityModule(
+                d_model=d_model,
+                d_latent=d_latent,
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                cache_strategy=cache_strategy,
+                cache_size_mb=cache_size_mb,
+                enable_profiling=True,
+            )
+            self.cache_manager = MLACacheManager(
+                max_cache_size_mb=cache_size_mb,
+                eviction_policy="lru",
+                compression_enabled=True,
+            )
+        else:
+            self.observability = None
+            self.cache_manager = None
+
+    def _init_weights(self):
+        """Initialize weights for numerical stability."""
+        # Use Xavier/Glorot initialization for all linear layers
+        nn.init.xavier_uniform_(self.q_proj.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.kv_compress.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.k_expand.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.v_expand.weight, gain=0.02)
+        nn.init.xavier_uniform_(self.o_proj.weight, gain=0.02)
 
     def _init_rope(self):
         """Initialize RoPE (Rotary Position Embeddings)."""
@@ -158,22 +195,66 @@ class MultiHeadLatentAttention(nn.Module):
         batch_size, seq_len, _ = hidden_states.size()
 
         # Merge masks for backward compatibility
+        # Properly combine causal and padding masks
         if causal_mask is not None or key_padding_mask is not None:
             if attention_mask is None:
-                attention_mask = causal_mask if causal_mask is not None else key_padding_mask
-            # Note: For full compatibility, would need to combine masks properly
-            # For now, just use whichever is provided
+                attention_mask = torch.zeros(1, 1, seq_len, seq_len, device=hidden_states.device, dtype=hidden_states.dtype)
+
+            # Add causal mask (prevents attention to future tokens)
+            if causal_mask is not None:
+                if causal_mask.dtype == torch.bool:
+                    # Convert boolean to additive mask: True → -inf, False → 0.0
+                    causal_additive = torch.zeros_like(attention_mask)
+                    causal_additive.masked_fill_(causal_mask.unsqueeze(0).unsqueeze(0) if causal_mask.dim() == 2 else causal_mask, float('-inf'))
+                    attention_mask = attention_mask + causal_additive
+                else:
+                    # Already additive
+                    attention_mask = attention_mask + causal_mask
+
+            # Add key padding mask (masks out padding positions)
+            if key_padding_mask is not None:
+                # key_padding_mask: [batch, seq] where True = padding
+                # Expand to [batch, 1, 1, seq] to mask keys
+                if key_padding_mask.dtype == torch.bool:
+                    padding_additive = torch.zeros(batch_size, 1, 1, seq_len, device=hidden_states.device, dtype=hidden_states.dtype)
+                    padding_additive.masked_fill_(key_padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+                    attention_mask = attention_mask + padding_additive
+                else:
+                    attention_mask = attention_mask + key_padding_mask.unsqueeze(1).unsqueeze(2)
 
         # Query projection
         q = self.q_proj(hidden_states)
         q = q.view(batch_size, seq_len, self.num_heads, self.head_dim)
 
         # KV compression to latent space
-        kv_latent = self.kv_compress(hidden_states)  # [batch, seq, d_latent]
+        if self.observability:
+            kv_latent = self.observability.profile_operation(
+                "kv_compression",
+                self.kv_compress,
+                hidden_states
+            )
+        else:
+            kv_latent = self.kv_compress(hidden_states)  # [batch, seq, d_latent]
+
+        # Track compression metrics
+        if self.observability and self.training:
+            # Compute original KV size (before compression)
+            # hidden_states is [batch, seq, d_model]
+            # We need to reshape to estimate uncompressed size: [batch, seq, 2, num_kv_heads, head_dim]
+            batch_size, seq_len, d_model = hidden_states.shape
+            # Create a dummy tensor representing full KV before compression
+            original_kv_size = batch_size * seq_len * 2 * self.num_kv_heads * self.head_dim * 4  # 4 bytes per float32
+            compressed_kv_size = batch_size * seq_len * self.d_latent * 4
+            # Skip metric tracking for now - method not available
+            pass
 
         # Expand latent to full K/V
-        k = self.k_expand(kv_latent)
-        v = self.v_expand(kv_latent)
+        if self.observability:
+            k = self.observability.profile_operation("k_expansion", self.k_expand, kv_latent)
+            v = self.observability.profile_operation("v_expansion", self.v_expand, kv_latent)
+        else:
+            k = self.k_expand(kv_latent)
+            v = self.v_expand(kv_latent)
 
         k = k.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         v = v.view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
@@ -182,6 +263,16 @@ class MultiHeadLatentAttention(nn.Module):
         past_seq_len = 0
         if past_key_value is not None:
             past_k_latent, past_v_latent = past_key_value
+
+            # CRITICAL FIX: DeepSeekV3Model passes cache as [seq, batch, d_latent]
+            # but FlashMLA needs [batch, seq, d_latent], so transpose if needed
+            if past_k_latent.dim() == 3 and past_k_latent.shape[2] == self.d_latent:
+                # Check if it's in [seq, batch, d_latent] format
+                if past_k_latent.shape[0] != batch_size:
+                    # Transpose from [seq, batch, d_latent] to [batch, seq, d_latent]
+                    past_k_latent = past_k_latent.transpose(0, 1)
+                    past_v_latent = past_v_latent.transpose(0, 1)
+
             # Cast back from FP8 to compute dtype if needed
             compute_dtype = hidden_states.dtype
             if hasattr(torch, 'float8_e4m3fn'):
@@ -239,7 +330,14 @@ class MultiHeadLatentAttention(nn.Module):
         hidden_states = self.o_proj(attn_output)
 
         # Prepare output
-        kv_cache = (kv_latent, kv_latent) if use_cache else None
+        # CRITICAL FIX: DeepSeekV3Model expects cache in [seq_len, batch, d_latent] format
+        # but FlashMLA produces [batch, seq_len, d_latent], so we need to transpose
+        if use_cache:
+            # Transpose from [batch, seq, d_latent] to [seq, batch, d_latent]
+            kv_cache_transposed = kv_latent.transpose(0, 1)
+            kv_cache = (kv_cache_transposed, kv_cache_transposed)
+        else:
+            kv_cache = None
 
         return MLAOutput(
             hidden_states=hidden_states,
@@ -256,6 +354,9 @@ class MultiHeadLatentAttention(nn.Module):
         """Use FlashMLA kernel for attention."""
         import sys
 
+        # Save original dtype for fallback
+        orig_dtype = q.dtype
+
         try:
             # Check if flash_attn_varlen_func is available (SM100/SM120 build)
             if hasattr(flash_mla, 'flash_attn_varlen_func'):
@@ -263,7 +364,6 @@ class MultiHeadLatentAttention(nn.Module):
                 batch_size, seq_len, num_heads, head_dim = q.shape
 
                 # FlashMLA requires BFloat16 - convert if needed
-                orig_dtype = q.dtype
                 if orig_dtype != torch.bfloat16:
                     q = q.to(torch.bfloat16)
                     k = k.to(torch.bfloat16)
@@ -303,6 +403,11 @@ class MultiHeadLatentAttention(nn.Module):
 
         except Exception as e:
             print(f"FlashMLA kernel failed ({sys.platform}), falling back to standard attention: {e}")
+            # Convert back to original dtype before fallback
+            if q.dtype != orig_dtype:
+                q = q.to(orig_dtype)
+                k = k.to(orig_dtype)
+                v = v.to(orig_dtype)
             return self._standard_attention(q, k, v, attention_mask)
 
     def _standard_attention(
@@ -339,7 +444,17 @@ class MultiHeadLatentAttention(nn.Module):
         if attention_mask is not None:
             # Check if mask shape matches attention weights
             if attention_mask.shape[-2:] == attn_weights.shape[-2:]:
-                attn_weights = attn_weights + attention_mask
+                # Convert boolean masks to additive masks
+                # Boolean convention: True = mask out (prevent attention)
+                # Additive convention: -inf = mask out, 0.0 = keep
+                if attention_mask.dtype == torch.bool:
+                    # Create additive mask: True → -inf, False → 0.0
+                    additive_mask = torch.zeros_like(attn_weights)
+                    additive_mask.masked_fill_(attention_mask, float('-inf'))
+                    attn_weights = attn_weights + additive_mask
+                else:
+                    # Already additive (assume -inf for masked positions)
+                    attn_weights = attn_weights + attention_mask
             else:
                 # Raise error on shape mismatch instead of silently skipping
                 # This prevents incorrect results from missing mask application

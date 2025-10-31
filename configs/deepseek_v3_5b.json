@@ -38,12 +38,15 @@
       "router_noise_std": 0.0,
       "router_bias_decay": 0.99,
       "capacity_factor": 1.0,
-      "use_aux_loss_free": false,
+      "use_aux_loss_free": true,
       "balance_loss_type": "entropy",
       "min_expert_capacity": 4,
       "use_deep_ep": false,
       "deep_ep_fp8": false,
-      "deep_ep_async": false
+      "deep_ep_async": false,
+      "use_segmented_experts": true,
+      "num_expert_segments": 4,
+      "segment_routing": "independent"
     }
   },
   "training": {

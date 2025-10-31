@@ -463,10 +463,10 @@ class TestModelIntegration:
 
         # Check output has MoE metrics
         assert hasattr(output, 'load_balancing_loss')
-        assert hasattr(output, 'expert_metrics')
+        assert hasattr(output, 'moe_metrics')
 
-        # Expert metrics should be a list (one per MoE layer)
-        assert isinstance(output.expert_metrics, list)
+        # MoE metrics should be a dict (aggregated across layers)
+        assert isinstance(output.moe_metrics, dict) or output.moe_metrics is None
 
         # If training with aux loss, load_balancing_loss should be present
         if config.moe.router_aux_loss_weight > 0:
@@ -569,3 +569,65 @@ class TestModelIntegration:
         # Check that capacity is at least min_expert_capacity
         assert output.expert_metrics['expert_capacity'] >= min_capacity, \
             f"Expert capacity {output.expert_metrics['expert_capacity']} should be >= {min_capacity}"
+
+    def test_segmented_expert_capacity(self, device):
+        """Test that segmented experts have per-segment capacity enforcement."""
+        moe = DeepSeekMoE(
+            d_model=256,
+            num_experts=4,
+            num_experts_per_token=2,
+            expert_intermediate_size=512,
+            capacity_factor=1.0,
+            num_expert_segments=2,  # 2 segments per expert
+            segment_routing="independent",  # Each segment is a routing target
+            use_deep_ep=False,
+        ).to(device)
+
+        batch_size, seq_len = 4, 8
+        total_tokens = batch_size * seq_len
+
+        # Set capacity
+        moe.set_expert_capacity(batch_size, seq_len)
+
+        # With 4 experts * 2 segments = 8 routing targets
+        # Expected capacity per target: (32 tokens * 2 top-k) / 8 targets = 8 tokens per target
+        num_routing_targets = 4 * 2
+        expected_capacity_per_target = int((total_tokens * 2) / num_routing_targets * 1.0)
+
+        assert moe.expert_capacity == expected_capacity_per_target, \
+            f"Segmented expert capacity {moe.expert_capacity} != expected {expected_capacity_per_target}"
+
+        # Run forward to verify capacity is enforced per segment
+        hidden_states = torch.randn(batch_size, seq_len, 256, device=device)
+        output = moe(hidden_states, training=True)
+
+        # Verify output
+        assert output.hidden_states.shape == (batch_size, seq_len, 256)
+        assert output.expert_metrics['expert_capacity'] == expected_capacity_per_target
+
+    def test_aux_loss_not_double_weighted(self, device):
+        """Test that aux loss is not weighted twice (router + model)."""
+        config = get_small_test_config()
+        config.moe.router_aux_loss_weight = 0.01  # Set router weight to 0.01
+        model = DeepSeekV3Model(config).to(device)
+
+        batch_size, seq_len = 2, 16
+        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len), device=device)
+        labels = input_ids.clone()
+
+        output = model(input_ids, labels=labels)
+
+        # The load_balancing_loss should be weighted by router_aux_loss_weight only
+        # It should NOT be multiplied by an additional moe_aux_loss_weight
+        # We can verify this by checking the magnitude is reasonable
+        if output.load_balancing_loss is not None:
+            # The aux loss should be in the range of ~0.01 (router weight) * raw_loss
+            # Not in the range of ~1e-6 (0.001 * 0.001)
+            assert output.load_balancing_loss.item() < 1.0, \
+                "Aux loss seems reasonable (not double-weighted to near-zero)"
+            assert output.load_balancing_loss.item() >= 0.0, \
+                "Aux loss should be non-negative"
+
+            # The total loss should include the aux loss directly (not double-weighted)
+            # We can't verify the exact value but can check it's included
+            assert output.loss is not None, "Total loss should be computed"

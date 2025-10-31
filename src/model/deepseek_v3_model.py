@@ -6,6 +6,7 @@ import warnings
 from .mla import MLAAttention, RMSNorm
 from ..moe.deepseek_moe import DeepSeekMoE, MoEOutput
 from .mtp import MTPHead
+from .embedding_fix import UnifiedEmbedding
 
 # Token range constants for multi-modal vocabulary
 TEXT_START = 0
@@ -49,8 +50,11 @@ class MLAOnlyBlock(nn.Module):
     ):
         super().__init__()
 
+        # Track which MLA implementation is being used
+        self.use_flash_mla = use_flash_mla and FLASH_MLA_AVAILABLE
+
         # Use FlashMLA if requested and available, otherwise fall back to standard MLA
-        if use_flash_mla and FLASH_MLA_AVAILABLE:
+        if self.use_flash_mla:
             self.mla = FlashMLAAttention(
                 d_model=d_model,
                 d_latent=d_latent if d_latent is not None else max(d_model // 4, 128),
@@ -85,14 +89,35 @@ class MLAOnlyBlock(nn.Module):
 
     def forward(self, x, causal_mask=None, key_padding_mask=None, past_key_value=None, use_cache=False):
         # Pre-norm + MLA + residual
-        mla_output = self.mla(
-            self.norm1(x),
-            causal_mask=causal_mask,
-            key_padding_mask=key_padding_mask,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
-        )
-        x = x + mla_output.hidden_states
+        # Note: x is [seq_len, batch, d_model] from DeepSeekV3Model
+        # FlashMLA expects [batch, seq_len, d_model], regular MLA expects [seq_len, batch, d_model]
+
+        normed_x = self.norm1(x)
+
+        if self.use_flash_mla:
+            # Transpose to [batch, seq_len, d_model] for FlashMLA
+            normed_x = normed_x.transpose(0, 1)
+            mla_output = self.mla(
+                normed_x,
+                causal_mask=causal_mask,
+                key_padding_mask=key_padding_mask,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+            )
+            # Transpose output back to [seq_len, batch, d_model]
+            hidden_states = mla_output.hidden_states.transpose(0, 1)
+        else:
+            # Regular MLA works with [seq_len, batch, d_model] directly
+            mla_output = self.mla(
+                normed_x,
+                causal_mask=causal_mask,
+                key_padding_mask=key_padding_mask,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+            )
+            hidden_states = mla_output.hidden_states
+
+        x = x + hidden_states
 
         # Pre-norm + dense FFN + residual
         ffn_out = self.ffn(self.norm2(x))
@@ -125,8 +150,11 @@ class MLAPlusMoEBlock(nn.Module):
     ):
         super().__init__()
 
+        # Track which MLA implementation is being used
+        self.use_flash_mla = use_flash_mla and FLASH_MLA_AVAILABLE
+
         # Use FlashMLA if requested and available, otherwise fall back to standard MLA
-        if use_flash_mla and FLASH_MLA_AVAILABLE:
+        if self.use_flash_mla:
             self.mla = FlashMLAAttention(
                 d_model=d_model,
                 d_latent=d_latent if d_latent is not None else max(d_model // 4, 128),
@@ -170,14 +198,35 @@ class MLAPlusMoEBlock(nn.Module):
 
     def forward(self, x, causal_mask=None, key_padding_mask=None, past_key_value=None, use_cache=False):
         # Pre-norm + MLA + residual
-        mla_output = self.mla(
-            self.norm1(x),
-            causal_mask=causal_mask,
-            key_padding_mask=key_padding_mask,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
-        )
-        x = x + mla_output.hidden_states
+        # Note: x is [seq_len, batch, d_model] from DeepSeekV3Model
+        # FlashMLA expects [batch, seq_len, d_model], regular MLA expects [seq_len, batch, d_model]
+
+        normed_x = self.norm1(x)
+
+        if self.use_flash_mla:
+            # Transpose to [batch, seq_len, d_model] for FlashMLA
+            normed_x = normed_x.transpose(0, 1)
+            mla_output = self.mla(
+                normed_x,
+                causal_mask=causal_mask,
+                key_padding_mask=key_padding_mask,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+            )
+            # Transpose output back to [seq_len, batch, d_model]
+            hidden_states = mla_output.hidden_states.transpose(0, 1)
+        else:
+            # Regular MLA works with [seq_len, batch, d_model] directly
+            mla_output = self.mla(
+                normed_x,
+                causal_mask=causal_mask,
+                key_padding_mask=key_padding_mask,
+                past_key_value=past_key_value,
+                use_cache=use_cache,
+            )
+            hidden_states = mla_output.hidden_states
+
+        x = x + hidden_states
 
         # Pre-norm + MoE + residual
         # MoE expects [batch, seq, d_model] format
@@ -204,19 +253,32 @@ class DeepSeekV3Model(nn.Module):
         self.num_layers = config.num_layers
         self.mtp_tokens = getattr(config.training, "mtp_tokens", 2)  # fallback
 
-        # Separate token embeddings for different modalities
-        # This prevents audio tokens from getting text-optimized representations
-        self.text_embed = nn.Embedding(50000, d_model)  # Text tokens [0, 50000)
-        self.mulaw_audio_embed = nn.Embedding(256, d_model)  # μ-law audio [50000, 50256)
-        self.special_embed = nn.Embedding(6, d_model)  # Special tokens [50256, 50262)
-        self.spec_audio_embed = nn.Embedding(1024, d_model)  # Spec audio [50262, 51286)
-        self.phoneme_embed = nn.Embedding(254, d_model)  # Phoneme tokens [51286, 51540)
+        # Use UnifiedEmbedding to cover full vocabulary (128k tokens)
+        # This fixes the issue where tokens above 51,540 had zero embeddings
+        if config.vocab_size > VOCAB_SIZE:
+            # Use unified embeddings for full vocab coverage
+            self.unified_embed = UnifiedEmbedding(
+                vocab_size=config.vocab_size,
+                d_model=d_model,
+                vocab_config=getattr(config, 'vocab_config', None),
+                init_std=config.init_method_std
+            )
+            self.use_unified_embedding = True
+        else:
+            # Legacy mode: Separate token embeddings for different modalities
+            # This prevents audio tokens from getting text-optimized representations
+            self.text_embed = nn.Embedding(50000, d_model)  # Text tokens [0, 50000)
+            self.mulaw_audio_embed = nn.Embedding(256, d_model)  # μ-law audio [50000, 50256)
+            self.special_embed = nn.Embedding(6, d_model)  # Special tokens [50256, 50262)
+            self.spec_audio_embed = nn.Embedding(1024, d_model)  # Spec audio [50262, 51286)
+            self.phoneme_embed = nn.Embedding(254, d_model)  # Phoneme tokens [51286, 51540)
 
-        # Initialize audio embeddings with scaled variance for acoustic preservation
-        # Audio tokens need larger initialization to preserve fine-grained details
-        nn.init.normal_(self.mulaw_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
-        nn.init.normal_(self.spec_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
-        nn.init.normal_(self.phoneme_embed.weight, mean=0.0, std=config.init_method_std)
+            # Initialize audio embeddings with scaled variance for acoustic preservation
+            # Audio tokens need larger initialization to preserve fine-grained details
+            nn.init.normal_(self.mulaw_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
+            nn.init.normal_(self.spec_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
+            nn.init.normal_(self.phoneme_embed.weight, mean=0.0, std=config.init_method_std)
+            self.use_unified_embedding = False
 
         # Internal flag for deprecation tracking
         self._token_embed_deprecated = True
@@ -286,6 +348,10 @@ class DeepSeekV3Model(nn.Module):
                     router_temperature=getattr(config.moe, 'router_temperature', 1.0),
                     router_noise_std=getattr(config.moe, 'router_noise_std', 0.1),
                     min_expert_capacity=getattr(config.moe, 'min_expert_capacity', 4),
+                    # Fine-grained expert segmentation (DeepSeek-V3 paper)
+                    num_expert_segments=getattr(config.moe, 'num_expert_segments', 1),
+                    expert_segment_sizes=getattr(config.moe, 'expert_segment_sizes', None),
+                    segment_routing=getattr(config.moe, 'segment_routing', 'independent'),
                 )
 
             self.blocks.append(block)
@@ -307,6 +373,7 @@ class DeepSeekV3Model(nn.Module):
         - Special: [50256, 50262)
         - Spec audio: [50262, 51286)
         - Phoneme: [51286, 51540)
+        - Reserved (if unified): [51540, 128000)
 
         Args:
             input_ids: [batch, seq_len] token IDs
@@ -314,6 +381,11 @@ class DeepSeekV3Model(nn.Module):
         Returns:
             embeddings: [batch, seq_len, d_model]
         """
+        # Use unified embedding if available (for full 128k vocab coverage)
+        if self.use_unified_embedding:
+            return self.unified_embed(input_ids)
+
+        # Legacy mode: Process each modality separately
         batch_size, seq_len = input_ids.shape
         d_model = self.text_embed.embedding_dim
         device = input_ids.device
@@ -557,19 +629,13 @@ class DeepSeekV3Model(nn.Module):
         lm_weight = getattr(self.config.training, 'lm_loss_weight', 1.0) if hasattr(self, 'config') else 1.0
         # Fix: Use config instead of hard-coded 1.0; default 0.5 for MTP to prevent dominance
         mtp_weight = getattr(self.config.training, 'mtp_loss_weight', 0.5) if hasattr(self, 'config') else 0.5
-        moe_weight = getattr(self.config.training, 'moe_aux_loss_weight', 0.001) if hasattr(self, 'config') else 0.001
 
         # When configs are mocked in unit tests these values may be Mock objects.
         # Ensure we always work with numeric scalars.
-        for name, value in (("lm_weight", lm_weight), ("moe_weight", moe_weight)):
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError):
-                numeric = 1.0 if name == "lm_weight" else 0.001
-            if name == "lm_weight":
-                lm_weight = numeric
-            else:
-                moe_weight = numeric
+        try:
+            lm_weight = float(lm_weight)
+        except (TypeError, ValueError):
+            lm_weight = 1.0
 
         if (lm_loss is not None) and (mtp_loss is not None):
             total_loss = lm_weight * lm_loss + mtp_weight * mtp_loss
@@ -578,9 +644,11 @@ class DeepSeekV3Model(nn.Module):
         elif mtp_loss is not None:
             total_loss = mtp_weight * mtp_loss
 
-        # Add MoE load balancing loss with weight (already summed across layers)
+        # Add MoE load balancing loss (already weighted by router_aux_loss_weight in the router)
+        # DO NOT multiply again - that would double-weight the loss!
+        # The router's aux_loss_weight (typically 0.001) is the effective weight.
         if moe_load_balancing_loss is not None and total_loss is not None:
-            total_loss = total_loss + moe_weight * moe_load_balancing_loss
+            total_loss = total_loss + moe_load_balancing_loss
 
         # Build output structure
         class Output:
@@ -592,6 +660,5 @@ class DeepSeekV3Model(nn.Module):
         output.past_key_values = present_key_values  # For inference caching
         output.load_balancing_loss = moe_load_balancing_loss  # MoE aux loss
         output.moe_metrics = aggregated_moe_metrics  # Aggregated expert stats (now a flat dict for trainer)
-        output.expert_metrics = moe_expert_metrics_per_layer  # Keep per-layer metrics for compatibility
 
         return output

@@ -13,7 +13,7 @@ class MLAConfig:
     d_model: int = 7168  # Base hidden dimension
     d_latent: int = 1536  # Latent KV dimension (1/4 to 1/2 of d_model)
     num_heads: int = 128
-    num_kv_heads: int = 128  # Can be less for GQA
+    num_kv_heads: Optional[int] = None  # Defaults to num_heads; can be less for GQA
 
     # KV cache settings
     use_fp8_kv: bool = True
@@ -40,6 +40,17 @@ class MLAConfig:
             print(f"Warning: d_latent ({self.d_latent}) is < 1/4 of d_model ({self.d_model}). "
                   f"This may degrade quality.")
 
+        # Validate GQA constraints
+        if self.num_kv_heads is not None:
+            if self.num_kv_heads > self.num_heads:
+                raise ValueError(
+                    f"num_kv_heads ({self.num_kv_heads}) cannot be greater than num_heads ({self.num_heads})"
+                )
+            if self.num_heads % self.num_kv_heads != 0:
+                raise ValueError(
+                    f"num_heads ({self.num_heads}) must be divisible by num_kv_heads ({self.num_kv_heads}) for GQA"
+                )
+
 
 @dataclass
 class MoEConfig:
@@ -56,13 +67,16 @@ class MoEConfig:
     num_expert_segments: int = 1  # Number of segments per expert (1 = no segmentation)
     expert_segment_sizes: Optional[List[int]] = None  # Custom segment sizes (None = equal split)
     segment_routing: str = "independent"  # "independent" or "shared" routing per segment
+                                          # Note: With "independent", capacity is divided across segments
+                                          # for fine-grained load control per DeepSeek-V3 paper
 
     # Shared experts (optional, for stability)
     num_shared_experts: int = 0
     shared_intermediate_size: int = 0
 
     # Routing
-    router_aux_loss_weight: float = 0.001  # Start small; 0.0 for aux-loss-free
+    router_aux_loss_weight: float = 0.001  # Effective aux loss weight (λ_aux); 0.0 for aux-loss-free
+                                            # This is the ONLY aux loss weight - model does not multiply again
     router_temperature: float = 1.0
     router_noise_std: float = 0.1  # Anneal to 0 during training
     router_bias_decay: float = 0.99  # EMA decay for aux-loss-free bias tracking
@@ -166,7 +180,9 @@ class TrainingConfig:
     lm_loss_weight: float = 1.0  # λ_LM: Next-token prediction loss weight
     mtp_loss_weight: float = 0.5  # λ_MTP: Multi-token prediction loss weight (default 0.5)
     mtp_loss_weights: Optional[List[float]] = None  # λ_MTP[d]: Per-depth MTP weights (None = uniform)
-    moe_aux_loss_weight: float = 0.001  # λ_aux: MoE auxiliary loss weight (sum across layers)
+    moe_aux_loss_weight: float = 0.001  # DEPRECATED: Use router_aux_loss_weight in MoEConfig instead
+                                        # This parameter is ignored to prevent double-weighting
+                                        # The router already applies the aux loss weight
 
     # Audio-specific loss weights (for speech-to-speech translation)
     audio_loss_weight: float = 2.0  # λ_audio: Weight for audio token loss (boost audio learning)

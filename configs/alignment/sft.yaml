@@ -1,0 +1,55 @@
+# SFT (Supervised Fine-Tuning) Configuration
+# Based on DeepSeek-V3 paper recommendations
+
+# Dataset
+dataset_name: "HuggingFaceH4/ultrachat_200k"  # High-quality instruction dataset
+# Alternative datasets:
+# - "teknium/OpenHermes-2.5"
+# - "Open-Orca/SlimOrca"
+# - "databricks/databricks-dolly-15k"
+# - Custom JSONL file path
+
+max_seq_length: 4096
+max_turns: 10  # Maximum conversation turns
+
+# Training hyperparameters
+learning_rate: 2e-5  # Lower than pretraining (typically 1e-4)
+weight_decay: 0.1
+warmup_steps: 100
+num_epochs: 3
+batch_size: 1  # Per-GPU batch size (long sequences)
+gradient_accumulation_steps: 8  # Effective batch size = 8
+
+# SFT-specific settings
+mask_prompt: true  # Only compute loss on assistant responses
+response_template: "### Assistant:"
+instruction_template: "### Human:"
+system_template: "### System:"
+
+# Optional system prompt for all conversations
+system_prompt: null
+# Example: "You are DeepSeek-V3, a helpful AI assistant."
+
+# MoE regularization during SFT
+maintain_load_balance: true  # Keep MoE balanced during fine-tuning
+moe_loss_weight: 0.0001  # Reduced from pretraining (0.001)
+
+# Checkpointing
+pretrained_checkpoint: "checkpoints/pretrain/final.pt"  # Path to pretrained model
+save_dir: "checkpoints/sft"
+save_steps: 500
+eval_steps: 100
+
+# Hardware optimization
+mixed_precision: true  # Use FP16/BF16
+gradient_checkpointing: true  # Save memory
+compile_model: false  # torch.compile (experimental)
+
+# Data loading
+num_workers: 4
+pin_memory: true
+
+# Logging
+logging_steps: 10
+report_to: ["tensorboard", "wandb"]  # Where to log metrics
+project_name: "deepseek-v3-sft"

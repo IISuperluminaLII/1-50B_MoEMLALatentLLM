@@ -56,6 +56,30 @@ class DeepSeekV3Trainer:
         self.best_val_loss = float("inf")
         self.total_tokens_processed = 0  # Chinchilla compliance tracking
 
+        # Gradient accumulation setup
+        self.micro_batch_size = config.training.micro_batch_size
+        self.global_batch_size = config.training.global_batch_size
+        self.accumulation_steps = self.global_batch_size // (self.micro_batch_size * self.world_size)
+
+        if self.accumulation_steps < 1:
+            self.log(f"Warning: Computed accumulation_steps={self.accumulation_steps}, setting to 1")
+            self.accumulation_steps = 1
+
+        # Check if effective batch size matches global batch size
+        effective_batch_size = self.micro_batch_size * self.accumulation_steps * self.world_size
+        if effective_batch_size != self.global_batch_size:
+            self.log(f"Warning: Effective batch size ({effective_batch_size}) != global_batch_size ({self.global_batch_size})")
+
+        self.accumulation_counter = 0
+        self.accumulated_loss = 0.0
+
+        self.log(f"Gradient Accumulation Configuration:")
+        self.log(f"  Global batch size: {self.global_batch_size}")
+        self.log(f"  Micro batch size: {self.micro_batch_size}")
+        self.log(f"  World size: {self.world_size}")
+        self.log(f"  Accumulation steps: {self.accumulation_steps}")
+        self.log(f"  Effective batch size: {effective_batch_size}")
+
         # Monitoring
         self.monitor = TrainingMonitor(
             output_dir=self.output_dir,
@@ -175,28 +199,55 @@ class DeepSeekV3Trainer:
         # without adding auxiliary losses again (which would cause double-counting)
         loss = outputs.loss
 
-        # Backward pass
-        self.optimizer.zero_grad()
+        # Scale loss for gradient accumulation
+        loss = loss / self.accumulation_steps
+
+        # Backward pass (accumulate gradients)
+        # Only zero gradients at the start of accumulation
+        if self.accumulation_counter == 0:
+            self.optimizer.zero_grad()
+
         loss.backward()
 
-        # Gradient clipping
-        if self.config.training.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config.training.grad_clip,
-            )
+        # Track accumulated loss (unscaled for logging)
+        self.accumulated_loss += outputs.loss.item()
+        self.accumulation_counter += 1
 
-        # Optimizer step
-        self.optimizer.step()
-        self.lr_scheduler.step()
+        # Check if we should update weights
+        if self.accumulation_counter >= self.accumulation_steps:
+            # Gradient clipping
+            if self.config.training.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.training.grad_clip,
+                )
 
-        # Collect metrics
+            # Optimizer step
+            self.optimizer.step()
+            self.lr_scheduler.step()
+
+            # Reset accumulation state
+            self.accumulation_counter = 0
+            avg_loss = self.accumulated_loss / self.accumulation_steps
+            self.accumulated_loss = 0.0
+        else:
+            # Not at accumulation boundary, return partial metrics
+            return {
+                "loss": loss.item() * self.accumulation_steps,  # Unscale for display
+                "accumulating": True,
+                "accumulation_progress": f"{self.accumulation_counter}/{self.accumulation_steps}",
+                "tokens_this_step": tokens_this_step,
+            }
+
+        # Collect metrics (use average loss across accumulation steps)
         metrics = {
-            "loss": loss.item(),
+            "loss": avg_loss,
             "lr": self.lr_scheduler.get_last_lr()[0],
             "step": self.step,
             "tokens_processed": self.total_tokens_processed,
-            "tokens_this_step": tokens_this_step,  # Return actual token count for this step
+            "tokens_this_step": tokens_this_step * self.accumulation_steps,  # Total tokens in effective batch
+            "accumulation_steps": self.accumulation_steps,
+            "effective_batch_size": self.micro_batch_size * self.accumulation_steps * self.world_size,
         }
 
         # MoE metrics

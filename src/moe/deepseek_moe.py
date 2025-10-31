@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 from dataclasses import dataclass
 import logging
+from .aux_loss_free_routing import AuxLossFreeRouter
+from .shared_expert_gating import SharedExpertModule
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +70,10 @@ class TopKRouter(nn.Module):
         # Router linear layer
         self.router = nn.Linear(d_model, num_experts, bias=False)
 
+        # Initialize router with small weights to prevent extreme logits
+        # Use Xavier/Glorot initialization scaled down for stability
+        nn.init.xavier_uniform_(self.router.weight, gain=0.01)
+
         # Expert load tracking (for aux-loss-free balancing)
         if use_aux_loss_free:
             self.register_buffer(
@@ -99,6 +105,13 @@ class TopKRouter(nn.Module):
 
         # Compute router logits
         router_logits = self.router(hidden_states)  # [batch_seq, num_experts]
+
+        # Check for NaN/inf in router output
+        if torch.isnan(router_logits).any() or torch.isinf(router_logits).any():
+            import warnings
+            warnings.warn(f"Router produced NaN/inf! hidden_states has NaN: {torch.isnan(hidden_states).any()}, has inf: {torch.isinf(hidden_states).any()}, router weight has NaN: {torch.isnan(self.router.weight).any()}")
+            # Clamp to prevent NaN propagation
+            router_logits = torch.clamp(router_logits, min=-1e9, max=1e9)
 
         # Apply temperature
         if self.temperature != 1.0:
@@ -139,12 +152,29 @@ class TopKRouter(nn.Module):
         Apply aux-loss-free load balancing bias.
 
         Penalizes overloaded experts by subtracting their historical load.
+        The bias strength is controlled by router_bias_decay (higher decay = weaker bias).
+
+        DeepSeek-V3 approach:
+        - Uses EMA-tracked expert loads to detect imbalance
+        - Subtracts normalized load from logits to discourage overused experts
+        - Eliminates need for auxiliary load balancing loss during training
         """
-        # Normalize expert loads to [0, 1]
-        load_bias = self.expert_loads / (self.expert_loads.max() + 1e-8)
+        # Normalize expert loads to [0, 1] range
+        max_load = self.expert_loads.max()
+        if max_load > 1e-8:
+            load_bias = self.expert_loads / max_load
+        else:
+            # No bias if no routing has occurred yet
+            load_bias = torch.zeros_like(self.expert_loads)
+
+        # Apply temperature scaling to bias strength
+        # Higher values = stronger penalty for overloaded experts
+        # Typical range: 0.1 to 2.0
+        bias_temperature = 1.0  # Default, could be made configurable
 
         # Subtract bias (penalize overloaded experts)
-        router_logits = router_logits - load_bias.unsqueeze(0)
+        # Shape: [batch_seq, num_experts] - [1, num_experts]
+        router_logits = router_logits - (load_bias * bias_temperature).unsqueeze(0)
 
         return router_logits
 
@@ -185,6 +215,10 @@ class TopKRouter(nn.Module):
             # Match dtype of expert_mask for scatter_add
             expert_mask.scatter_add_(1, expert_indices[:, k:k+1], torch.ones_like(expert_indices[:, k:k+1], dtype=expert_mask.dtype))
 
+        # Safeguard against division by zero
+        if batch_seq * top_k == 0:
+            return torch.tensor(0.0, device=router_logits.device, dtype=router_logits.dtype)
+
         expert_usage = expert_mask.sum(dim=0) / (batch_seq * top_k)
 
         # Compute mean routing probability per expert
@@ -193,6 +227,12 @@ class TopKRouter(nn.Module):
         # Aux loss: mean(usage * routing_prob) * num_experts
         # This encourages uniform distribution
         aux_loss = (expert_usage * mean_routing_prob).sum() * num_experts
+
+        # Check for NaN and return 0 if found (shouldn't happen with safeguards)
+        if torch.isnan(aux_loss):
+            import warnings
+            warnings.warn(f"NaN detected in aux_loss! routing_probs has NaN: {torch.isnan(routing_probs).any()}, expert_usage has NaN: {torch.isnan(expert_usage).any()}")
+            return torch.tensor(0.0, device=router_logits.device, dtype=router_logits.dtype)
 
         return aux_loss * self.aux_loss_weight
 
@@ -321,7 +361,7 @@ class DeepSeekMoE(nn.Module):
         router_temperature: float = 1.0,
         router_noise_std: float = 0.1,
         min_expert_capacity: int = 4,
-        num_expert_segments: int = 1,
+        num_expert_segments: int = 4,  # DeepSeek-V3 default: fine-grained with 4 segments
         expert_segment_sizes: Optional[list] = None,
         segment_routing: str = "independent",
     ):
@@ -339,16 +379,31 @@ class DeepSeekMoE(nn.Module):
         # Router
         # If using segmented routing, router needs to output logits for segments
         num_routing_targets = num_experts * num_expert_segments if segment_routing == "independent" else num_experts
-        self.router = TopKRouter(
-            d_model=d_model,
-            num_experts=num_routing_targets,
-            num_experts_per_token=num_experts_per_token,
-            aux_loss_weight=aux_loss_weight,
-            use_aux_loss_free=use_aux_loss_free,
-            router_bias_decay=router_bias_decay,
-            router_temperature=router_temperature,
-            router_noise_std=router_noise_std,
-        )
+
+        # Use AuxLossFreeRouter when aux-loss-free mode is enabled (DeepSeek V3 algorithm)
+        if use_aux_loss_free:
+            self.router = AuxLossFreeRouter(
+                num_experts=num_routing_targets,
+                d_model=d_model,
+                num_experts_per_token=num_experts_per_token,
+                load_ema_decay=router_bias_decay,
+                bias_temperature=router_temperature,
+                noise_std=router_noise_std,
+                capacity_factor=capacity_factor,
+                min_capacity=min_expert_capacity,
+            )
+        else:
+            # Use standard TopKRouter with auxiliary loss
+            self.router = TopKRouter(
+                d_model=d_model,
+                num_experts=num_routing_targets,
+                num_experts_per_token=num_experts_per_token,
+                aux_loss_weight=aux_loss_weight,
+                use_aux_loss_free=False,  # Always False for TopKRouter
+                router_bias_decay=router_bias_decay,
+                router_temperature=router_temperature,
+                router_noise_std=router_noise_std,
+            )
 
         # Expert FFNs (segmented or monolithic)
         if num_expert_segments > 1:
@@ -372,15 +427,20 @@ class DeepSeekMoE(nn.Module):
             self.use_segmented_experts = False
 
         # Shared experts (optional) with router-controlled gating
-        self.shared_experts = None
-        self.shared_expert_gate = None
+        # Shared experts with proper gating (DeepSeek-V3 style)
+        self.shared_expert_module = None
         if num_shared_experts > 0:
-            self.shared_experts = nn.ModuleList([
-                ExpertFFN(d_model, shared_intermediate_size)
-                for _ in range(num_shared_experts)
-            ])
-            # Learnable gating for shared experts (paper section 3.2)
-            self.shared_expert_gate = nn.Linear(d_model, num_shared_experts, bias=False)
+            self.shared_expert_module = SharedExpertModule(
+                d_model=d_model,
+                num_shared_experts=num_shared_experts,
+                shared_intermediate_size=shared_intermediate_size,
+                gating_temperature=getattr(self, 'gating_temperature', router_temperature),
+                gating_dropout=getattr(self, 'gating_dropout', 0.0),
+                use_soft_gating=True,  # DeepSeek-V3 uses soft gating for shared experts
+                normalize_gates=True,
+                residual_connection=False,  # MoE layer already has residual
+                scale_shared_output=True,
+            )
 
         # Expert capacity (max tokens per expert)
         self.expert_capacity = None
@@ -429,20 +489,23 @@ class DeepSeekMoE(nn.Module):
                 expert_weights,
             )
 
-        # Add shared experts if present with router-controlled gating
-        if self.shared_experts is not None:
-            # Compute gating weights for shared experts
-            shared_logits = self.shared_expert_gate(flat_hidden)  # [batch_seq, num_shared]
-            shared_weights = F.softmax(shared_logits, dim=-1)  # Normalize across shared experts
+        # Add shared experts with proper gating
+        gate_metrics = None
+        if self.shared_expert_module is not None:
+            # Use gated shared experts (DeepSeek-V3 style)
+            shared_output, gate_metrics = self.shared_expert_module(
+                flat_hidden,
+                return_metrics=True
+            )
 
-            # Process each shared expert and weight by gate
-            shared_output = torch.zeros_like(expert_output)
-            for i, shared_expert in enumerate(self.shared_experts):
-                expert_out = shared_expert(flat_hidden)  # [batch_seq, d_model]
-                # Weight by the learned gate for this shared expert
-                shared_output += expert_out * shared_weights[:, i:i+1]
+            # Check for NaN in shared expert output
+            if torch.isnan(shared_output).any():
+                import warnings
+                warnings.warn(f"NaN detected in shared expert output! Input has NaN: {torch.isnan(flat_hidden).any()}")
+                # Zero out to prevent NaN propagation
+                shared_output = torch.zeros_like(expert_output)
 
-            # Add to routed expert output
+            # Add to routed expert output (Eq. 12: h = shared_ffn + routed_ffn)
             expert_output = expert_output + shared_output
 
         # Reshape back to [batch, seq, d_model]
@@ -450,6 +513,14 @@ class DeepSeekMoE(nn.Module):
 
         # Compute expert metrics
         expert_metrics = self._compute_expert_metrics(expert_indices, router_logits)
+
+        # Add shared expert gate metrics if available
+        if gate_metrics is not None:
+            if expert_metrics is None:
+                expert_metrics = {}
+            expert_metrics.update({
+                f'shared_gate_{k}': v for k, v in gate_metrics.items()
+            })
 
         return MoEOutput(
             hidden_states=output,
@@ -576,12 +647,11 @@ class DeepSeekMoE(nn.Module):
         if not DEEP_EP_AVAILABLE:
             return self._forward_standard(hidden_states, expert_indices, expert_weights)
 
-        # Fall back to standard implementation for segmented routing
-        # TODO: Implement DeepEP support for segmented experts
-        #       Requires extending all-to-all dispatch to handle segment-level routing.
-        #       Track progress: See ARCHITECTURAL_FIXES.md for implementation plan.
+        # For segmented experts with independent routing, treat each segment as a virtual expert
+        # DeepEP's dispatch/combine handles the all-to-all, we just need to map indices correctly
+        num_routing_targets = self.num_experts
         if self.use_segmented_experts and self.segment_routing == "independent":
-            return self._forward_standard(hidden_states, expert_indices, expert_weights)
+            num_routing_targets = self.num_experts * self.num_expert_segments
 
         try:
             batch_seq, d_model = hidden_states.size()
@@ -601,19 +671,37 @@ class DeepSeekMoE(nn.Module):
             )
 
             # Stage 2: Local expert execution
-            # Each rank processes its assigned experts on the dispatched tokens
+            # Each rank processes its assigned experts/segments on the dispatched tokens
             local_expert_outputs = []
 
-            for expert_idx in range(len(self.experts)):
-                # Get tokens dispatched to this expert
-                expert_tokens = dispatched_data.get_tokens_for_expert(expert_idx)
+            for routing_idx in range(num_routing_targets):
+                # Map routing index to (expert_idx, segment_idx) for segmented experts
+                if self.use_segmented_experts and self.segment_routing == "independent":
+                    expert_idx = routing_idx // self.num_expert_segments
+                    segment_idx = routing_idx % self.num_expert_segments
+                else:
+                    expert_idx = routing_idx
+                    segment_idx = None
+
+                # Get tokens dispatched to this routing target
+                expert_tokens = dispatched_data.get_tokens_for_expert(routing_idx)
 
                 if expert_tokens is None or expert_tokens.size(0) == 0:
                     continue
 
-                # Process through expert
-                expert_out = self.experts[expert_idx](expert_tokens)
-                local_expert_outputs.append((expert_idx, expert_out))
+                # Process through expert with optional segment mask
+                if segment_idx is not None:
+                    segment_mask = torch.zeros(
+                        expert_tokens.size(0),
+                        self.num_expert_segments,
+                        device=expert_tokens.device
+                    )
+                    segment_mask[:, segment_idx] = 1.0
+                    expert_out = self.experts[expert_idx](expert_tokens, segment_mask=segment_mask)
+                else:
+                    expert_out = self.experts[expert_idx](expert_tokens)
+
+                local_expert_outputs.append((routing_idx, expert_out))
 
             # Stage 3: Combine - Gather outputs back via all-to-all
             # DeepEP API: output = deepep.combine(
@@ -674,7 +762,13 @@ class DeepSeekMoE(nn.Module):
         overflow_tokens = getattr(self, '_overflow_tokens', 0)
         capacity_used = 0.0
         if self.expert_capacity is not None:
-            max_possible_capacity = self.expert_capacity * self.num_experts
+            # Calculate total capacity across all routing targets (experts or segments)
+            if self.use_segmented_experts and self.segment_routing == "independent":
+                num_routing_targets = self.num_experts * self.num_expert_segments
+            else:
+                num_routing_targets = self.num_experts
+
+            max_possible_capacity = self.expert_capacity * num_routing_targets
             actual_tokens_processed = batch_seq - overflow_tokens
             capacity_used = actual_tokens_processed / max_possible_capacity if max_possible_capacity > 0 else 0.0
 
@@ -690,10 +784,23 @@ class DeepSeekMoE(nn.Module):
         }
 
     def set_expert_capacity(self, batch_size: int, seq_len: int):
-        """Set expert capacity based on batch size."""
+        """
+        Set expert capacity based on batch size.
+
+        For segmented experts with independent routing, capacity is divided across segments
+        to ensure fine-grained load control per the DeepSeek-V3 paper.
+        """
         total_tokens = batch_size * seq_len
-        avg_tokens_per_expert = (total_tokens * self.num_experts_per_token) / self.num_experts
+
+        # Calculate number of routing targets (experts or expert segments)
+        if self.use_segmented_experts and self.segment_routing == "independent":
+            num_routing_targets = self.num_experts * self.num_expert_segments
+        else:
+            num_routing_targets = self.num_experts
+
+        # Divide token budget across all routing targets
+        avg_tokens_per_target = (total_tokens * self.num_experts_per_token) / num_routing_targets
         self.expert_capacity = max(
-            int(avg_tokens_per_expert * self.capacity_factor),
+            int(avg_tokens_per_target * self.capacity_factor),
             self.min_expert_capacity
         )

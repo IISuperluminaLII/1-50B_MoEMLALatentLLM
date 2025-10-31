@@ -20,6 +20,14 @@ wheels/
 .installed.cfg
 *.egg
 
+# Test files in root directory
+/test*.py
+/test_*.py
+
+# Markdown files in root (except README)
+/*.md
+!README.md
+
 # Virtual environments
 venv/
 ENV/
@@ -154,3 +162,10 @@ analyze_audio_output.py
 analyze_generated_audio.py
 DEEPSEEK_V3_COMPLIANCE_CHECK.md
 ARCHITECTURAL_FIXES.md
+CLAUDE.md
+model_test_output.txt
+training_test_output.txt
+CRITICAL_FIXES_SUMMARY.md
+INTEGRATION_FIXES_COMPLETE.md
+THREE_NEW_CRITICAL_FIXES.md
+TEST_REPORT.md
