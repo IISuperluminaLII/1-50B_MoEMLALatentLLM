@@ -1,0 +1,72 @@
+{
+  "model": {
+    "name": "deepseek_v3_official",
+    "vocab_size": 129280,
+    "hidden_size": 7168,
+    "num_hidden_layers": 61,
+    "num_attention_heads": 128,
+    "max_position_embeddings": 163840,
+    "rope_theta": 10000.0,
+    "rope_scaling": {
+      "type": "default",
+      "factor": 1.0
+    },
+    "first_k_dense_replace": 3,
+    "moe_layer_freq": 1,
+    "rms_norm_eps": 1e-6,
+    "mtp_enabled": true,
+    "mtp_num_experts": 1
+  },
+  "mla": {
+    "q_lora_rank": 1536,
+    "kv_lora_rank": 512,
+    "qk_nope_head_dim": 128,
+    "qk_rope_head_dim": 64,
+    "v_head_dim": 128,
+    "attention_dropout": 0.0
+  },
+  "moe": {
+    "num_experts": 256,
+    "n_shared_experts": 1,
+    "n_group": 8,
+    "topk_group": 1,
+    "moe_intermediate_size": 2048,
+    "scoring_func": "sigmoid",
+    "norm_topk_prob": true,
+    "routed_scaling_factor": 1.0,
+    "aux_loss_weight": 0.0,
+    "topk_method": "group_limited_greedy"
+  },
+  "training": {
+    "micro_batch_size": 4,
+    "global_batch_size": 512,
+    "seq_length": 4096,
+    "max_steps": 100000,
+    "warmup_steps": 2000,
+    "learning_rate": 3e-4,
+    "min_lr": 1e-5,
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "adam_eps": 1e-8,
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "save_interval": 1000,
+    "eval_interval": 100,
+    "log_interval": 10,
+    "use_fp16": true,
+    "use_fp8": false,
+    "seed": 42,
+    "use_deepspeed": false,
+    "checkpoint_dir": "./checkpoints_official",
+    "tokenizer": "deepseek-ai/DeepSeek-V3-Base"
+  },
+  "dataset": {
+    "name": "dolma",
+    "path": "allenai/dolma",
+    "subset": "v1_7-sample",
+    "split": "train",
+    "streaming": true,
+    "num_workers": 4
+  },
+  "description": "Official DeepSeek-V3 configuration matching HuggingFace release exactly"
+}

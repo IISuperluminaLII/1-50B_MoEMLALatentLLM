@@ -19,6 +19,15 @@ from src.model.deepseek_v3_model import DeepSeekV3Model
 from src.training.trainer import DeepSeekV3Trainer
 from src.data.dolma_loader import create_dolma_dataloaders
 
+# Import official model support
+try:
+    from src.model.deepseek_v3_official import DeepseekV3Config, DeepseekV3ForCausalLM
+    from src.model.migrate_to_official import create_official_config_from_existing
+    OFFICIAL_MODEL_AVAILABLE = True
+except ImportError:
+    OFFICIAL_MODEL_AVAILABLE = False
+    print("[WARNING] Official model not available, using custom implementation")
+
 
 def setup_distributed(args):
     """Setup distributed training environment."""
@@ -200,7 +209,28 @@ def main():
 
     # Create model
     print("\n📦 Creating model...")
-    model = DeepSeekV3Model(config.model_config)
+
+    # Check if we should use the official model architecture
+    use_official = False
+    if hasattr(config.model_config, 'name'):
+        use_official = 'official' in config.model_config.name
+    elif hasattr(config.model_config, 'vocab_size'):
+        use_official = config.model_config.vocab_size == 129280
+
+    if use_official and OFFICIAL_MODEL_AVAILABLE:
+        print("[INFO] Using official DeepSeek-V3 architecture")
+        # Convert config to official format
+        config_dict = {
+            'model': config.model_config.__dict__ if hasattr(config.model_config, '__dict__') else config.model_config,
+            'moe': config.model_config.moe.__dict__ if hasattr(config.model_config.moe, '__dict__') else config.model_config.moe,
+            'mla': config.model_config.mla.__dict__ if hasattr(config.model_config.mla, '__dict__') else config.model_config.mla,
+        }
+        official_config = create_official_config_from_existing(config_dict)
+        model = DeepseekV3ForCausalLM(official_config)
+    else:
+        if use_official and not OFFICIAL_MODEL_AVAILABLE:
+            print("[WARNING] Official model requested but not available, using custom implementation")
+        model = DeepSeekV3Model(config.model_config)
 
     # Print model summary
     if rank == 0:
