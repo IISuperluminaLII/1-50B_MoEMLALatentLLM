@@ -1,0 +1,57 @@
+# DPO (Direct Preference Optimization) Configuration
+# Based on DeepSeek-V3 and recent DPO papers
+
+# Dataset
+dataset_name: "Anthropic/hh-rlhf"  # Human preference dataset
+# Alternative datasets:
+# - "stanfordnlp/SHP"  # Stanford Human Preferences
+# - "openai/summarize_from_feedback"
+# - "Dahoas/rm-static"
+# - Custom preference pairs
+
+max_seq_length: 2048  # Shorter than SFT due to memory constraints
+
+# DPO hyperparameters
+beta: 0.1  # KL penalty coefficient (controls deviation from reference)
+           # Lower = more conservative, Higher = more aggressive optimization
+           # DeepSeek-V3 likely uses 0.1-0.2
+
+learning_rate: 1e-6  # Much lower than SFT (avoid catastrophic forgetting)
+num_epochs: 1  # Usually 1-2 epochs is sufficient
+batch_size: 4
+gradient_accumulation_steps: 8  # Effective batch = 32
+
+# Loss configuration
+sft_loss_weight: 0.1  # Optional SFT regularization to maintain capabilities
+                      # Set to 0 for pure DPO
+
+# Reference model (frozen SFT checkpoint)
+reference_model_path: "checkpoints/sft/sft_final.pt"
+
+# Training settings
+warmup_steps: 50
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+# Evaluation
+eval_steps: 100
+eval_samples: 1000  # Number of samples for evaluation
+
+# Checkpointing
+save_dir: "checkpoints/dpo"
+save_steps: 500
+save_total_limit: 3  # Keep only last 3 checkpoints
+
+# Hardware optimization
+mixed_precision: true
+gradient_checkpointing: true
+
+# Logging
+logging_steps: 10
+report_to: ["tensorboard", "wandb"]
+project_name: "deepseek-v3-dpo"
+
+# Advanced DPO settings
+label_smoothing: 0.0  # Optional label smoothing for DPO loss
+ipo_grad_norm: false  # Use IPO (Identity Preference Optimization) variant
+average_log_prob: false  # Average log probs over tokens (vs sum)

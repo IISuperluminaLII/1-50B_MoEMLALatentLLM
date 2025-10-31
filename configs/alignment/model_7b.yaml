@@ -1,0 +1,91 @@
+# Model configuration for 7B parameter alignment
+# Based on DeepSeek-V3 architecture
+
+# Core dimensions
+d_model: 4096
+vocab_size: 51540  # Multi-modal vocabulary
+num_layers: 32
+
+# Multi-head Latent Attention (MLA)
+mla:
+  d_latent: 1024  # Compressed KV dimension (1/4 of d_model)
+  num_heads: 32
+  num_kv_heads: 8  # GQA with 4:1 ratio
+  rope_base: 10000.0
+  max_context_length: 32768  # Extended context for alignment
+  use_fp8_kv: true  # FP8 KV cache compression
+  use_flash_mla: false  # Disable for now (not available)
+
+# Mixture of Experts (MoE)
+moe:
+  num_experts: 64  # Fewer experts for 7B model
+  num_experts_per_token: 2  # Top-2 routing
+  expert_intermediate_size: 11008  # Standard 8/3 ratio
+
+  # Shared experts for stability during alignment
+  num_shared_experts: 2  # Always-active experts
+  shared_intermediate_size: 11008
+
+  # Fine-grained segmentation
+  num_expert_segments: 1  # Disable for alignment (stability)
+  segment_routing: "independent"
+
+  # Routing configuration
+  router_aux_loss_weight: 0.0  # Disable during alignment
+  use_aux_loss_free: true  # Use bias-based balancing instead
+  router_temperature: 1.0
+  router_noise_std: 0.0  # No noise during alignment
+  router_bias_decay: 0.99
+  capacity_factor: 1.25  # Slightly over-provisioned
+
+  # Hardware
+  use_deep_ep: false  # Disable for single-node alignment
+
+# FFN configuration (for non-MoE layers if any)
+ffn:
+  intermediate_size: 11008
+  activation: "swiglu"
+  dropout: 0.0  # No dropout during alignment
+
+# Multi-Token Prediction (MTP)
+mtp:
+  enabled: false  # Disable MTP during alignment
+  num_predict_tokens: 0
+
+# Training configuration
+training:
+  # Loss weights for alignment
+  lm_loss_weight: 1.0
+  mtp_loss_weight: 0.0  # MTP disabled
+
+  # Audio weights (if doing speech alignment)
+  audio_loss_weight: 1.0
+  text_loss_weight: 1.0
+
+  # Optimization
+  gradient_checkpointing: true  # Save memory
+  mixed_precision: true  # Use BF16
+  compile_model: false  # torch.compile (experimental)
+
+  # Batch sizes (per GPU)
+  micro_batch_size: 1
+  gradient_accumulation_steps: 8
+
+  # Learning rate (set in stage-specific configs)
+  learning_rate: null
+  warmup_steps: null
+
+  # Evaluation
+  eval_interval: 100
+  save_interval: 500
+
+# Initialization
+init_method_std: 0.02  # Standard deviation for weight init
+layer_norm_epsilon: 1e-5
+
+# Audio configuration (for speech models)
+audio:
+  mulaw_vocab_size: 256
+  spec_vocab_size: 1024
+  phoneme_vocab_size: 254
+  sample_rate: 16000

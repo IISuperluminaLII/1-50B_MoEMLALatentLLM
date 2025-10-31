@@ -1,0 +1,76 @@
+# PPO (Proximal Policy Optimization) Configuration
+# Based on DeepSeek-V3 RLHF phase using stable-baselines3
+
+# Environment settings
+max_seq_length: 2048
+max_new_tokens: 512  # Maximum tokens to generate per response
+
+# PPO hyperparameters (stable-baselines3 defaults with DeepSeek-V3 adjustments)
+learning_rate: 3e-4  # Can use linear schedule
+n_steps: 2048  # Number of steps per update (trajectory length)
+batch_size: 64  # Minibatch size for PPO updates
+n_epochs: 10  # Number of epochs per PPO update (K in paper)
+
+# Advantage estimation
+gamma: 0.99  # Discount factor for rewards
+gae_lambda: 0.95  # GAE lambda for advantage estimation
+
+# PPO specific
+clip_range: 0.2  # PPO clip parameter (ε in paper)
+clip_range_vf: null  # Optional value function clipping
+vf_coef: 0.5  # Value function coefficient in combined loss
+ent_coef: 0.01  # Entropy coefficient (exploration bonus)
+
+# KL penalty (prevent diverging from SFT model)
+kl_coef: 0.02  # Initial KL coefficient
+target_kl: 0.01  # Target KL divergence (adaptive KL control)
+               # Training stops for batch if KL exceeds this
+
+# Reward model
+reward_model_path: "checkpoints/reward_model/final.pt"
+reward_scale: 1.0  # Scale factor for rewards
+reward_baseline: 0.0  # Baseline reward (subtracted from all rewards)
+
+# Generation settings for rollouts
+temperature: 0.9  # Sampling temperature during rollouts
+top_p: 0.9  # Nucleus sampling
+top_k: 50  # Top-k sampling
+repetition_penalty: 1.1  # Penalize repetition
+
+# Training settings
+total_timesteps: 1_000_000  # Total environment steps
+eval_freq: 10_000  # Evaluation frequency
+save_freq: 50_000  # Checkpoint frequency
+
+# Optimizer settings
+optimizer: "adam"
+adam_eps: 1e-5
+max_grad_norm: 0.5  # Gradient clipping
+
+# Reference model (for KL penalty)
+reference_model_path: "checkpoints/sft/sft_final.pt"
+
+# Checkpointing
+save_dir: "checkpoints/ppo"
+save_best_model: true  # Save best model based on eval reward
+save_replay_buffer: false  # Don't save replay buffer (huge for LLMs)
+
+# Hardware optimization
+device: "cuda"
+n_envs: 1  # Number of parallel environments (usually 1 for LLMs)
+use_sde: false  # Don't use State Dependent Exploration
+normalize_advantage: true  # Normalize advantages
+
+# Logging
+log_interval: 10  # Log every N updates
+tensorboard_log: "logs/ppo_tb"
+verbose: 1  # 0: no output, 1: info, 2: debug
+
+# Advanced PPO settings
+use_clipped_value_loss: true  # Clip value function loss
+target_update_interval: null  # For target network (if used)
+policy_kwargs:
+  normalize_images: false  # Not needed for text
+  optimizer_class: "adam"
+  optimizer_kwargs:
+    eps: 1e-5
