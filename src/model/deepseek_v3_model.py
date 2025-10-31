@@ -68,19 +68,20 @@ class MLAOnlyBlock(nn.Module):
             )
         else:
             # Use DeepseekV3Attention with proper configuration
-            self.mla = DeepseekV3Attention(
-                d_model=d_model,
-                num_heads=num_heads,
-                q_lora_rank=1536,  # Paper-compliant values
-                kv_lora_rank=512,
-                qk_nope_head_dim=128,
-                qk_rope_head_dim=64,
-                v_head_dim=128,
-                use_fp8_kv_cache=use_fp8_kv,
-                attention_dropout=attn_dropout,
-                max_position_embeddings=max_context_length,
-                rope_theta=rope_base,
-            )
+            self.mla = DeepseekV3Attention({
+                'hidden_size': d_model,
+                'num_attention_heads': num_heads,
+                'q_lora_rank': 1536,  # Paper-compliant values
+                'kv_lora_rank': 512,
+                'qk_nope_head_dim': 128,
+                'qk_rope_head_dim': 64,
+                'v_head_dim': 128,
+                'use_fp8_kv_cache': use_fp8_kv,
+                'attention_dropout': attn_dropout,
+                'max_position_embeddings': max_context_length,
+                'rope_theta': rope_base,
+                'rope_scaling': None,
+            })
         self.norm1 = RMSNorm(d_model, eps=norm_eps)
 
         # Dense FFN (standard 4x expansion)
@@ -173,19 +174,20 @@ class MLAPlusMoEBlock(nn.Module):
             )
         else:
             # Use DeepseekV3Attention with proper configuration
-            self.mla = DeepseekV3Attention(
-                d_model=d_model,
-                num_heads=num_heads,
-                q_lora_rank=1536,  # Paper-compliant values
-                kv_lora_rank=512,
-                qk_nope_head_dim=128,
-                qk_rope_head_dim=64,
-                v_head_dim=128,
-                use_fp8_kv_cache=use_fp8_kv,
-                attention_dropout=attn_dropout,
-                max_position_embeddings=max_context_length,
-                rope_theta=rope_base,
-            )
+            self.mla = DeepseekV3Attention({
+                'hidden_size': d_model,
+                'num_attention_heads': num_heads,
+                'q_lora_rank': 1536,  # Paper-compliant values
+                'kv_lora_rank': 512,
+                'qk_nope_head_dim': 128,
+                'qk_rope_head_dim': 64,
+                'v_head_dim': 128,
+                'use_fp8_kv_cache': use_fp8_kv,
+                'attention_dropout': attn_dropout,
+                'max_position_embeddings': max_context_length,
+                'rope_theta': rope_base,
+                'rope_scaling': None,
+            })
         self.norm1 = RMSNorm(d_model, eps=norm_eps)
 
         # DeepSeekMoE with full config support (aux-loss-free, DeepEP, shared experts)

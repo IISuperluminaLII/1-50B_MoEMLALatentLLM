@@ -25,6 +25,11 @@ class DeepseekV3AttentionOutput:
     past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
     attn_weights: Optional[torch.Tensor] = None
 
+    @property
+    def kv_cache(self):
+        """Alias for past_key_value for compatibility with blocks."""
+        return self.past_key_value
+
 
 class YaRoPE(nn.Module):
     """

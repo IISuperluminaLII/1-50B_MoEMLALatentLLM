@@ -33,9 +33,14 @@ class PaperCompliantMoEConfig:
     num_experts_per_token: int = 8  # Paper uses 8 experts per token
     n_shared_experts: int = 2  # Paper has 2 shared experts
 
+    # Expert segmentation (DeepSeek-V3 uses fine-grained experts)
+    num_expert_segments: int = 4  # DeepSeek-V3 uses 4 segments per expert
+    segment_routing: str = "independent"  # "independent" | "hierarchical"
+
     # Aux loss configuration
     balance_loss_type: str = "seqlen"  # "seqlen" | "token" | "aux_free"
     aux_loss_weight: float = 0.001
+    use_aux_loss_free: bool = True  # Use aux-loss-free routing
 
     # Aux-loss-free parameters
     hot_expert_penalty: float = 0.01  # Penalty for hot experts

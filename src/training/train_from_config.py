@@ -254,27 +254,22 @@ def main():
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")
 
-    # Try loading DeepSeek-V3 tokenizer first for 128k vocab support
-    tokenizer = None
-    tokenizer_candidates = [
-        ("deepseek-ai/DeepSeek-V3-Base", "DeepSeek-V3 128k tokenizer"),
-        ("deepseek-ai/deepseek-llm-7b-base", "DeepSeek fallback tokenizer"),
-        ("gpt2", "GPT-2 tokenizer (fallback)"),
-    ]
-
-    for tokenizer_name, description in tokenizer_candidates:
-        try:
-            print(f"  Trying to load {description}...")
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-            tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.pad_token
-            print(f"✓ Loaded {description} (vocab size: {len(tokenizer)})")
-            break
-        except Exception as e:
-            print(f"  Could not load {description}: {e}")
-            continue
-
-    if tokenizer is None:
-        raise ValueError("Could not load any tokenizer. Please install transformers and ensure model access.")
+    # DeepSeek-V3 tokenizer is REQUIRED for proper 128k vocab support
+    print("  Loading DeepSeek-V3 tokenizer (required for 128k vocabulary)...")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-V3-Base")
+        tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.pad_token
+        print(f"✓ Loaded DeepSeek-V3 tokenizer (vocab size: {len(tokenizer)})")
+    except Exception as e:
+        print("\n" + "="*80)
+        print("ERROR: DeepSeek-V3 tokenizer is REQUIRED for training")
+        print("="*80)
+        print(f"Failed to load tokenizer: {e}")
+        print("\nPlease ensure you have access to 'deepseek-ai/DeepSeek-V3-Base'")
+        print("The model requires the exact DeepSeek-V3 vocabulary for proper training.")
+        print("Using a different tokenizer will break vocabulary matching and model performance.")
+        print("="*80)
+        sys.exit(1)
 
     # Validate tokenizer vocab size against config
     expected_vocab_size = config.model_config.vocab_size

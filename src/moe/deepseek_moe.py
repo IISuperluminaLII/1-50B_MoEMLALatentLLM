@@ -439,7 +439,7 @@ class DeepSeekMoE(nn.Module):
                 use_soft_gating=True,  # DeepSeek-V3 uses soft gating for shared experts
                 normalize_gates=True,
                 residual_connection=False,  # MoE layer already has residual
-                scale_shared_output=True,
+                scale_shared_output=False,  # DeepSeek-V3 uses additive combination, not averaged
             )
 
         # Expert capacity (max tokens per expert)
