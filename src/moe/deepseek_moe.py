@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 from dataclasses import dataclass
 import logging
+from .aux_loss_free_routing import AuxLossFreeRouter
 
 logger = logging.getLogger(__name__)
 
@@ -377,16 +378,31 @@ class DeepSeekMoE(nn.Module):
         # Router
         # If using segmented routing, router needs to output logits for segments
         num_routing_targets = num_experts * num_expert_segments if segment_routing == "independent" else num_experts
-        self.router = TopKRouter(
-            d_model=d_model,
-            num_experts=num_routing_targets,
-            num_experts_per_token=num_experts_per_token,
-            aux_loss_weight=aux_loss_weight,
-            use_aux_loss_free=use_aux_loss_free,
-            router_bias_decay=router_bias_decay,
-            router_temperature=router_temperature,
-            router_noise_std=router_noise_std,
-        )
+
+        # Use AuxLossFreeRouter when aux-loss-free mode is enabled (DeepSeek V3 algorithm)
+        if use_aux_loss_free:
+            self.router = AuxLossFreeRouter(
+                num_experts=num_routing_targets,
+                d_model=d_model,
+                num_experts_per_token=num_experts_per_token,
+                load_ema_decay=router_bias_decay,
+                bias_temperature=router_temperature,
+                noise_std=router_noise_std,
+                capacity_factor=capacity_factor,
+                min_capacity=min_expert_capacity,
+            )
+        else:
+            # Use standard TopKRouter with auxiliary loss
+            self.router = TopKRouter(
+                d_model=d_model,
+                num_experts=num_routing_targets,
+                num_experts_per_token=num_experts_per_token,
+                aux_loss_weight=aux_loss_weight,
+                use_aux_loss_free=False,  # Always False for TopKRouter
+                router_bias_decay=router_bias_decay,
+                router_temperature=router_temperature,
+                router_noise_std=router_noise_std,
+            )
 
         # Expert FFNs (segmented or monolithic)
         if num_expert_segments > 1:

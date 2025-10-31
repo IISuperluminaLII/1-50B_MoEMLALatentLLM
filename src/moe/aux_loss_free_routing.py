@@ -92,10 +92,16 @@ class AuxLossFreeRouter(nn.Module):
         Returns:
             expert_indices: Selected expert indices [batch*seq, top_k]
             expert_weights: Weights for selected experts [batch*seq, top_k]
+            router_logits: Raw router logits [batch*seq, num_experts]
             aux_loss: Optional auxiliary loss (if balance_loss_weight > 0)
         """
-        batch, seq_len, _ = hidden_states.shape
-        hidden_states_flat = hidden_states.view(-1, hidden_states.size(-1))
+        # Handle both 2D [batch*seq, d_model] and 3D [batch, seq, d_model] inputs
+        if hidden_states.dim() == 3:
+            batch, seq_len, _ = hidden_states.shape
+            hidden_states_flat = hidden_states.view(-1, hidden_states.size(-1))
+        else:
+            # Already flat: [batch*seq, d_model]
+            hidden_states_flat = hidden_states
 
         # Compute router logits
         router_logits = self.router(hidden_states_flat)
@@ -128,7 +134,7 @@ class AuxLossFreeRouter(nn.Module):
         if training and self.balance_loss_weight > 0:
             aux_loss = self._compute_balance_loss(router_logits, expert_indices)
 
-        return expert_indices, expert_weights, aux_loss
+        return expert_indices, expert_weights, router_logits, aux_loss
 
     def _apply_adaptive_bias(self, router_logits: torch.Tensor) -> torch.Tensor:
         """

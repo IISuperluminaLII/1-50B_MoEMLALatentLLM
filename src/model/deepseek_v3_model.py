@@ -6,6 +6,7 @@ import warnings
 from .mla import MLAAttention, RMSNorm
 from ..moe.deepseek_moe import DeepSeekMoE, MoEOutput
 from .mtp import MTPHead
+from .embedding_fix import UnifiedEmbedding
 
 # Token range constants for multi-modal vocabulary
 TEXT_START = 0
@@ -252,19 +253,32 @@ class DeepSeekV3Model(nn.Module):
         self.num_layers = config.num_layers
         self.mtp_tokens = getattr(config.training, "mtp_tokens", 2)  # fallback
 
-        # Separate token embeddings for different modalities
-        # This prevents audio tokens from getting text-optimized representations
-        self.text_embed = nn.Embedding(50000, d_model)  # Text tokens [0, 50000)
-        self.mulaw_audio_embed = nn.Embedding(256, d_model)  # μ-law audio [50000, 50256)
-        self.special_embed = nn.Embedding(6, d_model)  # Special tokens [50256, 50262)
-        self.spec_audio_embed = nn.Embedding(1024, d_model)  # Spec audio [50262, 51286)
-        self.phoneme_embed = nn.Embedding(254, d_model)  # Phoneme tokens [51286, 51540)
+        # Use UnifiedEmbedding to cover full vocabulary (128k tokens)
+        # This fixes the issue where tokens above 51,540 had zero embeddings
+        if config.vocab_size > VOCAB_SIZE:
+            # Use unified embeddings for full vocab coverage
+            self.unified_embed = UnifiedEmbedding(
+                vocab_size=config.vocab_size,
+                d_model=d_model,
+                vocab_config=getattr(config, 'vocab_config', None),
+                init_std=config.init_method_std
+            )
+            self.use_unified_embedding = True
+        else:
+            # Legacy mode: Separate token embeddings for different modalities
+            # This prevents audio tokens from getting text-optimized representations
+            self.text_embed = nn.Embedding(50000, d_model)  # Text tokens [0, 50000)
+            self.mulaw_audio_embed = nn.Embedding(256, d_model)  # μ-law audio [50000, 50256)
+            self.special_embed = nn.Embedding(6, d_model)  # Special tokens [50256, 50262)
+            self.spec_audio_embed = nn.Embedding(1024, d_model)  # Spec audio [50262, 51286)
+            self.phoneme_embed = nn.Embedding(254, d_model)  # Phoneme tokens [51286, 51540)
 
-        # Initialize audio embeddings with scaled variance for acoustic preservation
-        # Audio tokens need larger initialization to preserve fine-grained details
-        nn.init.normal_(self.mulaw_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
-        nn.init.normal_(self.spec_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
-        nn.init.normal_(self.phoneme_embed.weight, mean=0.0, std=config.init_method_std)
+            # Initialize audio embeddings with scaled variance for acoustic preservation
+            # Audio tokens need larger initialization to preserve fine-grained details
+            nn.init.normal_(self.mulaw_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
+            nn.init.normal_(self.spec_audio_embed.weight, mean=0.0, std=config.init_method_std * 1.5)
+            nn.init.normal_(self.phoneme_embed.weight, mean=0.0, std=config.init_method_std)
+            self.use_unified_embedding = False
 
         # Internal flag for deprecation tracking
         self._token_embed_deprecated = True
@@ -359,6 +373,7 @@ class DeepSeekV3Model(nn.Module):
         - Special: [50256, 50262)
         - Spec audio: [50262, 51286)
         - Phoneme: [51286, 51540)
+        - Reserved (if unified): [51540, 128000)
 
         Args:
             input_ids: [batch, seq_len] token IDs
@@ -366,6 +381,11 @@ class DeepSeekV3Model(nn.Module):
         Returns:
             embeddings: [batch, seq_len, d_model]
         """
+        # Use unified embedding if available (for full 128k vocab coverage)
+        if self.use_unified_embedding:
+            return self.unified_embed(input_ids)
+
+        # Legacy mode: Process each modality separately
         batch_size, seq_len = input_ids.shape
         d_model = self.text_embed.embedding_dim
         device = input_ids.device

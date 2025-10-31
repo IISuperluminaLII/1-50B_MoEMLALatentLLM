@@ -239,11 +239,14 @@ class MultiHeadLatentAttention(nn.Module):
         # Track compression metrics
         if self.observability and self.training:
             # Compute original KV size (before compression)
-            original_kv = torch.cat([
-                hidden_states.unsqueeze(2).expand(-1, -1, 2, self.num_kv_heads, self.head_dim),
-            ], dim=2).contiguous()
-            compressed_kv = kv_latent.unsqueeze(2).expand(-1, -1, 2, -1)
-            self.observability.compute_compression_metrics(original_kv, compressed_kv)
+            # hidden_states is [batch, seq, d_model]
+            # We need to reshape to estimate uncompressed size: [batch, seq, 2, num_kv_heads, head_dim]
+            batch_size, seq_len, d_model = hidden_states.shape
+            # Create a dummy tensor representing full KV before compression
+            original_kv_size = batch_size * seq_len * 2 * self.num_kv_heads * self.head_dim * 4  # 4 bytes per float32
+            compressed_kv_size = batch_size * seq_len * self.d_latent * 4
+            # Skip metric tracking for now - method not available
+            pass
 
         # Expand latent to full K/V
         if self.observability:
@@ -260,6 +263,16 @@ class MultiHeadLatentAttention(nn.Module):
         past_seq_len = 0
         if past_key_value is not None:
             past_k_latent, past_v_latent = past_key_value
+
+            # CRITICAL FIX: DeepSeekV3Model passes cache as [seq, batch, d_latent]
+            # but FlashMLA needs [batch, seq, d_latent], so transpose if needed
+            if past_k_latent.dim() == 3 and past_k_latent.shape[2] == self.d_latent:
+                # Check if it's in [seq, batch, d_latent] format
+                if past_k_latent.shape[0] != batch_size:
+                    # Transpose from [seq, batch, d_latent] to [batch, seq, d_latent]
+                    past_k_latent = past_k_latent.transpose(0, 1)
+                    past_v_latent = past_v_latent.transpose(0, 1)
+
             # Cast back from FP8 to compute dtype if needed
             compute_dtype = hidden_states.dtype
             if hasattr(torch, 'float8_e4m3fn'):
@@ -317,7 +330,14 @@ class MultiHeadLatentAttention(nn.Module):
         hidden_states = self.o_proj(attn_output)
 
         # Prepare output
-        kv_cache = (kv_latent, kv_latent) if use_cache else None
+        # CRITICAL FIX: DeepSeekV3Model expects cache in [seq_len, batch, d_latent] format
+        # but FlashMLA produces [batch, seq_len, d_latent], so we need to transpose
+        if use_cache:
+            # Transpose from [batch, seq, d_latent] to [seq, batch, d_latent]
+            kv_cache_transposed = kv_latent.transpose(0, 1)
+            kv_cache = (kv_cache_transposed, kv_cache_transposed)
+        else:
+            kv_cache = None
 
         return MLAOutput(
             hidden_states=hidden_states,
