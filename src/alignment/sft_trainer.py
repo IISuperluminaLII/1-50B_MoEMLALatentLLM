@@ -87,6 +87,14 @@ class SFTTrainer:
         # Create optimizer
         self.optimizer = self._create_optimizer(model)
 
+        # Setup mixed precision training
+        self.mixed_precision = True  # Enable by default for memory efficiency
+        self.scaler = torch.cuda.amp.GradScaler() if self.mixed_precision else None
+
+        # Gradient accumulation counter
+        self.gradient_accumulation_steps = config.gradient_accumulation_steps
+        self.accumulated_steps = 0
+
         # Load pretrained checkpoint if specified
         if config.resume_from_pretrain:
             self.load_pretrained_checkpoint(config.resume_from_pretrain)
@@ -169,6 +177,46 @@ class SFTTrainer:
                 loss = loss + self.config.moe_loss_weight * model_output.load_balancing_loss
 
         return loss
+
+    def backward(self, loss: torch.Tensor):
+        """
+        Perform backward pass with gradient accumulation and mixed precision.
+
+        Args:
+            loss: Loss to backpropagate
+        """
+        # Scale loss for gradient accumulation
+        scaled_loss = loss / self.gradient_accumulation_steps
+
+        if self.mixed_precision and self.scaler is not None:
+            # Mixed precision backward pass
+            self.scaler.scale(scaled_loss).backward()
+        else:
+            # Regular backward pass
+            scaled_loss.backward()
+
+        self.accumulated_steps += 1
+
+    def optimizer_step(self):
+        """
+        Perform optimizer step with gradient clipping and mixed precision.
+        """
+        if self.accumulated_steps < self.gradient_accumulation_steps:
+            return  # Not ready to step yet
+
+        # Gradient clipping
+        if self.mixed_precision and self.scaler is not None:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.optimizer.step()
+
+        # Clear gradients
+        self.optimizer.zero_grad()
+        self.accumulated_steps = 0
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         """Train one epoch of SFT."""
