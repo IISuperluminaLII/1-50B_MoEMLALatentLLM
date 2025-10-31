@@ -263,29 +263,63 @@ class LatentSpaceMLA(nn.Module):
         """
         Efficient attention computation staying in latent space.
 
-        This is the key innovation - we compute attention scores using
-        latent representations and only expand when necessary.
+        Properly handles dimension alignment and preserves multi-head structure.
         """
         batch_size, seq_len = q_latent.shape[:2]
+        kv_seq_len = k_latent.shape[1]
 
-        # Compute latent attention scores
-        # Use low-rank approximation: Q_latent @ K_latent^T
-        latent_scores = torch.matmul(q_latent, k_latent.transpose(-2, -1))
-        latent_scores = latent_scores / math.sqrt(self.kv_lora_rank)
+        # Project latents to head space while preserving head structure
+        # Q: [batch, seq, q_lora_rank] -> [batch, num_heads, seq, q_head_dim]
+        queries = self.q_b_proj(q_latent)
+        queries = queries.view(batch_size, seq_len, self.num_heads, self.q_head_dim)
+        queries = queries.transpose(1, 2)
+
+        # K: [batch, seq, kv_lora_rank] -> [batch, num_heads, seq, q_head_dim]
+        keys = self.k_b_proj(k_latent)
+        keys = keys.view(batch_size, kv_seq_len, self.num_heads, self.q_head_dim)
+        keys = keys.transpose(1, 2)
+
+        # V: [batch, seq, kv_lora_rank] -> [batch, num_heads, seq, v_head_dim]
+        values = self.v_b_proj(v_latent)
+        values = values.view(batch_size, kv_seq_len, self.num_heads, self.v_head_dim)
+        values = values.transpose(1, 2)
+
+        # Apply position encoding
+        if q_nope is not None and q_rope is not None:
+            # Split and apply RoPE to keys
+            k_nope = keys[..., :self.qk_nope_head_dim]
+            k_rope = keys[..., self.qk_nope_head_dim:]
+
+            # Get position embeddings for keys
+            kv_position_ids = torch.arange(kv_seq_len, device=k_latent.device).unsqueeze(0)
+            cos_k, sin_k = self.rotary_emb(kv_position_ids, kv_seq_len)
+            k_rope = apply_rotary_pos_emb(k_rope, cos_k, sin_k)
+
+            # Combine NOPE and ROPE components
+            queries = torch.cat([q_nope, q_rope], dim=-1)
+            keys = torch.cat([k_nope, k_rope], dim=-1)
+
+        # Multi-head attention in expanded space (but from latent projections)
+        # [batch, num_heads, seq, head_dim] @ [batch, num_heads, head_dim, kv_seq]
+        attn_scores = torch.matmul(queries, keys.transpose(-2, -1))
+        attn_scores = attn_scores / math.sqrt(self.q_head_dim)
 
         if attention_mask is not None:
-            # Adapt mask for latent space computation
-            latent_scores = latent_scores + attention_mask[:, :seq_len, :k_latent.shape[1]]
+            # Expand mask for multi-head
+            if attention_mask.dim() == 3:
+                attention_mask = attention_mask.unsqueeze(1)
+            attn_scores = attn_scores + attention_mask
 
-        latent_weights = F.softmax(latent_scores, dim=-1)
-        latent_weights = self.attention_dropout(latent_weights)
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_weights = self.attention_dropout(attn_weights)
 
-        # Compute value aggregation in latent space
-        latent_output = torch.matmul(latent_weights, v_latent)
+        # Apply attention to values
+        # [batch, num_heads, seq, kv_seq] @ [batch, num_heads, kv_seq, v_head_dim]
+        output = torch.matmul(attn_weights, values)
 
-        # Project latent output to value space
-        output = self.v_b_proj(latent_output)
-        output = output.view(batch_size, seq_len, -1)
+        # Reshape back
+        output = output.transpose(1, 2).contiguous()
+        output = output.view(batch_size, seq_len, self.num_heads * self.v_head_dim)
 
         return output
 

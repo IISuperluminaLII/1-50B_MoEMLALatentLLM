@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 from dataclasses import dataclass
 import logging
-from .aux_loss_free_routing import AuxLossFreeRouter
+from .deepseek_v3_routing import DeepSeekV3Router
 from .shared_expert_gating import SharedExpertModule
 
 logger = logging.getLogger(__name__)
@@ -380,17 +380,17 @@ class DeepSeekMoE(nn.Module):
         # If using segmented routing, router needs to output logits for segments
         num_routing_targets = num_experts * num_expert_segments if segment_routing == "independent" else num_experts
 
-        # Use AuxLossFreeRouter when aux-loss-free mode is enabled (DeepSeek V3 algorithm)
+        # Use DeepSeekV3Router when aux-loss-free mode is enabled (DeepSeek V3 algorithm)
         if use_aux_loss_free:
-            self.router = AuxLossFreeRouter(
+            self.router = DeepSeekV3Router(
                 num_experts=num_routing_targets,
                 d_model=d_model,
                 num_experts_per_token=num_experts_per_token,
-                load_ema_decay=router_bias_decay,
-                bias_temperature=router_temperature,
+                gamma=0.01,  # Default from paper
+                alpha=aux_loss_weight,  # Use aux_loss_weight for balance loss
+                temperature=router_temperature,
                 noise_std=router_noise_std,
-                capacity_factor=capacity_factor,
-                min_capacity=min_expert_capacity,
+                use_balance_loss=True,
             )
         else:
             # Use standard TopKRouter with auxiliary loss

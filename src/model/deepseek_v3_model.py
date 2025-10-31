@@ -3,7 +3,8 @@ import torch.nn as nn
 import math
 import warnings
 
-from .mla import MLAAttention, RMSNorm
+from .mla import RMSNorm
+from ..mla.deepseek_v3_attention import DeepseekV3Attention
 from ..moe.deepseek_moe import DeepSeekMoE, MoEOutput
 from .mtp import MTPHead
 from .embedding_fix import UnifiedEmbedding
@@ -66,14 +67,19 @@ class MLAOnlyBlock(nn.Module):
                 rope_theta=rope_base,
             )
         else:
-            self.mla = MLAAttention(
-                d_model,
-                num_heads,
-                d_latent=d_latent,
-                dropout=attn_dropout,
-                use_fp8_kv=use_fp8_kv,
-                max_context_length=max_context_length,
-                rope_base=rope_base,
+            # Use DeepseekV3Attention with proper configuration
+            self.mla = DeepseekV3Attention(
+                d_model=d_model,
+                num_heads=num_heads,
+                q_lora_rank=1536,  # Paper-compliant values
+                kv_lora_rank=512,
+                qk_nope_head_dim=128,
+                qk_rope_head_dim=64,
+                v_head_dim=128,
+                use_fp8_kv_cache=use_fp8_kv,
+                attention_dropout=attn_dropout,
+                max_position_embeddings=max_context_length,
+                rope_theta=rope_base,
             )
         self.norm1 = RMSNorm(d_model, eps=norm_eps)
 
@@ -166,14 +172,19 @@ class MLAPlusMoEBlock(nn.Module):
                 rope_theta=rope_base,
             )
         else:
-            self.mla = MLAAttention(
-                d_model,
-                num_heads,
-                d_latent=d_latent,
-                dropout=attn_dropout,
-                use_fp8_kv=use_fp8_kv,
-                max_context_length=max_context_length,
-                rope_base=rope_base,
+            # Use DeepseekV3Attention with proper configuration
+            self.mla = DeepseekV3Attention(
+                d_model=d_model,
+                num_heads=num_heads,
+                q_lora_rank=1536,  # Paper-compliant values
+                kv_lora_rank=512,
+                qk_nope_head_dim=128,
+                qk_rope_head_dim=64,
+                v_head_dim=128,
+                use_fp8_kv_cache=use_fp8_kv,
+                attention_dropout=attn_dropout,
+                max_position_embeddings=max_context_length,
+                rope_theta=rope_base,
             )
         self.norm1 = RMSNorm(d_model, eps=norm_eps)
 

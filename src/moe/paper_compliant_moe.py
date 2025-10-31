@@ -208,13 +208,13 @@ class AuxLossFreeRouter(nn.Module):
 
         # Apply aux-loss-free load balancing adjustments
         if training:
-            # Compute average load per expert
-            avg_load = self.expert_loads / (self.total_tokens.float() + 1e-6)
-            target_load = 1.0 / self.num_experts
+            # expert_loads is already an EMA of normalized per-batch loads
+            # target_load is the expected load per expert (uniform distribution)
+            target_load = self.num_experts_per_token / self.num_experts
 
-            # Identify hot and cold experts
-            hot_mask = avg_load > target_load * 1.5  # 50% above average
-            cold_mask = avg_load < target_load * 0.5  # 50% below average
+            # Identify hot and cold experts based on EMA loads
+            hot_mask = self.expert_loads > target_load * 1.5  # 50% above average
+            cold_mask = self.expert_loads < target_load * 0.5  # 50% below average
 
             # Apply penalties and boosts
             adjustments = torch.zeros_like(router_logits)
@@ -243,7 +243,9 @@ class AuxLossFreeRouter(nn.Module):
                         self.expert_counts[exp_id] += count
 
                 # Update EMA of loads
-                current_loads = self.expert_counts.float() / batch_seq_len
+                # Normalize by total possible selections (batch_seq_len * num_experts_per_token)
+                total_selections = batch_seq_len * self.num_experts_per_token
+                current_loads = self.expert_counts.float() / total_selections
                 self.expert_loads = (
                     self.load_ema_decay * self.expert_loads +
                     (1 - self.load_ema_decay) * current_loads
@@ -383,8 +385,8 @@ class PaperCompliantMoE(nn.Module):
         shared_output = sum(shared_outputs) / len(shared_outputs) if shared_outputs else 0
         routed_output = routed_output.view(batch_size, seq_len, d_model)
 
-        # Final output combines routed and shared with residual
-        output = hidden_states + routed_output + shared_output
+        # Final output combines routed and shared (no residual - that's handled by the layer)
+        output = routed_output + shared_output
 
         # Prepare metrics if requested
         metrics = None
