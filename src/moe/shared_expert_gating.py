@@ -193,18 +193,28 @@ class SharedExpertModule(nn.Module):
         Process input through gated shared experts.
 
         Args:
-            hidden_states: Input tensor [batch, seq, d_model]
+            hidden_states: Input tensor [batch*seq, d_model] or [batch, seq, d_model]
             return_metrics: Whether to return gating metrics
 
         Returns:
-            output: Processed tensor [batch, seq, d_model]
+            output: Processed tensor (same shape as input)
             metrics: Optional dictionary of metrics
         """
-        batch_size, seq_len, d_model = hidden_states.shape
+        # Handle both 2D [batch*seq, d_model] and 3D [batch, seq, d_model] inputs
+        original_shape = hidden_states.shape
+        if hidden_states.dim() == 2:
+            # Already flattened
+            batch_seq, d_model = hidden_states.shape
+            reshaped_hidden = hidden_states
+        else:
+            # 3D input
+            batch_size, seq_len, d_model = hidden_states.shape
+            batch_seq = batch_size * seq_len
+            reshaped_hidden = hidden_states.view(batch_seq, d_model)
 
         # Compute gating weights
         gate_weights, gate_logits = self.gate(
-            hidden_states,
+            reshaped_hidden,
             return_gate_logits=return_metrics
         )
 
@@ -212,7 +222,7 @@ class SharedExpertModule(nn.Module):
         expert_outputs = []
         for i, expert in enumerate(self.experts):
             # Get expert output
-            expert_out = expert(hidden_states)  # [batch, seq, d_model]
+            expert_out = expert(reshaped_hidden)  # [batch*seq, d_model]
 
             # Apply gating weight
             gated_out = expert_out * gate_weights[..., i:i+1]
@@ -230,7 +240,7 @@ class SharedExpertModule(nn.Module):
 
         # Add residual connection if enabled
         if self.residual_connection:
-            output = output + hidden_states
+            output = output + reshaped_hidden
 
         # Compute metrics if requested
         metrics = None

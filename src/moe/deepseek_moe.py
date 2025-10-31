@@ -14,6 +14,7 @@ from typing import Optional, Tuple
 from dataclasses import dataclass
 import logging
 from .aux_loss_free_routing import AuxLossFreeRouter
+from .shared_expert_gating import SharedExpertModule
 
 logger = logging.getLogger(__name__)
 
@@ -426,12 +427,20 @@ class DeepSeekMoE(nn.Module):
             self.use_segmented_experts = False
 
         # Shared experts (optional) with router-controlled gating
-        self.shared_experts = None
+        # Shared experts with proper gating (DeepSeek-V3 style)
+        self.shared_expert_module = None
         if num_shared_experts > 0:
-            self.shared_experts = nn.ModuleList([
-                ExpertFFN(d_model, shared_intermediate_size)
-                for _ in range(num_shared_experts)
-            ])
+            self.shared_expert_module = SharedExpertModule(
+                d_model=d_model,
+                num_shared_experts=num_shared_experts,
+                shared_intermediate_size=shared_intermediate_size,
+                gating_temperature=getattr(self, 'gating_temperature', router_temperature),
+                gating_dropout=getattr(self, 'gating_dropout', 0.0),
+                use_soft_gating=True,  # DeepSeek-V3 uses soft gating for shared experts
+                normalize_gates=True,
+                residual_connection=False,  # MoE layer already has residual
+                scale_shared_output=True,
+            )
 
         # Expert capacity (max tokens per expert)
         self.expert_capacity = None
@@ -480,22 +489,21 @@ class DeepSeekMoE(nn.Module):
                 expert_weights,
             )
 
-        # Add shared experts if present (direct addition per Eq. 12)
-        if self.shared_experts is not None:
-            # Shared experts are always active and directly summed
-            # No softmax gating - each shared expert contributes additively
-            shared_output = torch.zeros_like(expert_output)
-            for shared_expert in self.shared_experts:
-                expert_out = shared_expert(flat_hidden)  # [batch_seq, d_model]
+        # Add shared experts with proper gating
+        gate_metrics = None
+        if self.shared_expert_module is not None:
+            # Use gated shared experts (DeepSeek-V3 style)
+            shared_output, gate_metrics = self.shared_expert_module(
+                flat_hidden,
+                return_metrics=True
+            )
 
-                # Check for NaN in shared expert output
-                if torch.isnan(expert_out).any():
-                    import warnings
-                    warnings.warn(f"NaN detected in shared expert output! Input has NaN: {torch.isnan(flat_hidden).any()}")
-                    # Skip this expert to prevent NaN propagation
-                    continue
-
-                shared_output += expert_out
+            # Check for NaN in shared expert output
+            if torch.isnan(shared_output).any():
+                import warnings
+                warnings.warn(f"NaN detected in shared expert output! Input has NaN: {torch.isnan(flat_hidden).any()}")
+                # Zero out to prevent NaN propagation
+                shared_output = torch.zeros_like(expert_output)
 
             # Add to routed expert output (Eq. 12: h = shared_ffn + routed_ffn)
             expert_output = expert_output + shared_output
@@ -505,6 +513,14 @@ class DeepSeekMoE(nn.Module):
 
         # Compute expert metrics
         expert_metrics = self._compute_expert_metrics(expert_indices, router_logits)
+
+        # Add shared expert gate metrics if available
+        if gate_metrics is not None:
+            if expert_metrics is None:
+                expert_metrics = {}
+            expert_metrics.update({
+                f'shared_gate_{k}': v for k, v in gate_metrics.items()
+            })
 
         return MoEOutput(
             hidden_states=output,

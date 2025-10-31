@@ -223,10 +223,44 @@ def main():
 
     # Load tokenizer
     print("\n🔤 Loading tokenizer...")
-    # For now, use a standard tokenizer. Replace with your custom tokenizer if needed.
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    tokenizer.pad_token = tokenizer.eos_token
-    print(f"✓ Tokenizer loaded (vocab size: {len(tokenizer)})")
+
+    # Try loading DeepSeek-V3 tokenizer first for 128k vocab support
+    tokenizer = None
+    tokenizer_candidates = [
+        ("deepseek-ai/DeepSeek-V3-Base", "DeepSeek-V3 128k tokenizer"),
+        ("deepseek-ai/deepseek-llm-7b-base", "DeepSeek fallback tokenizer"),
+        ("gpt2", "GPT-2 tokenizer (fallback)"),
+    ]
+
+    for tokenizer_name, description in tokenizer_candidates:
+        try:
+            print(f"  Trying to load {description}...")
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+            tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.pad_token
+            print(f"✓ Loaded {description} (vocab size: {len(tokenizer)})")
+            break
+        except Exception as e:
+            print(f"  Could not load {description}: {e}")
+            continue
+
+    if tokenizer is None:
+        raise ValueError("Could not load any tokenizer. Please install transformers and ensure model access.")
+
+    # Validate tokenizer vocab size against config
+    expected_vocab_size = config.model_config.vocab_size
+    actual_vocab_size = len(tokenizer)
+
+    if actual_vocab_size != expected_vocab_size:
+        print(f"⚠️  WARNING: Tokenizer vocab size ({actual_vocab_size}) does not match config ({expected_vocab_size})")
+        if actual_vocab_size < expected_vocab_size:
+            raise ValueError(
+                f"Tokenizer vocab size ({actual_vocab_size}) is smaller than model vocab size ({expected_vocab_size}). "
+                f"This will cause embedding errors. Please use a tokenizer with at least {expected_vocab_size} tokens."
+            )
+        else:
+            print(f"  Model will only use first {expected_vocab_size} tokens from tokenizer.")
+
+    print(f"✓ Tokenizer validation complete")
 
     # Create dataloaders
     print("\n📊 Creating dataloaders...")
