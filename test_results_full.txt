@@ -1,0 +1,36 @@
+============================= test session starts =============================
+platform win32 -- Python 3.12.12, pytest-8.4.2, pluggy-1.6.0 -- C:\Users\Shashank Murthy\.conda\envs\150BLLM\python.exe
+cachedir: .pytest_cache
+rootdir: c:\PyCharmProjectsSpaceConflict\150BLLM
+configfile: pytest.ini
+plugins: anyio-4.11.0, cov-7.0.0
+collecting ... collected 624 items / 1 error
+
+=================================== ERRORS ====================================
+______________ ERROR collecting tests/test_sm120_tmem_layout.py _______________
+'sm120' not found in `markers` configuration option
+============================== warnings summary ===============================
+..\..\Users\Shashank Murthy\.conda\envs\150BLLM\Lib\site-packages\torch\cuda\__init__.py:63
+  C:\Users\Shashank Murthy\.conda\envs\150BLLM\Lib\site-packages\torch\cuda\__init__.py:63: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+    import pynvml  # type: ignore[import]
+
+..\..\Users\Shashank Murthy\.conda\envs\150BLLM\Lib\site-packages\deepspeed\runtime\config_utils.py:100
+..\..\Users\Shashank Murthy\.conda\envs\150BLLM\Lib\site-packages\deepspeed\runtime\config_utils.py:100
+..\..\Users\Shashank Murthy\.conda\envs\150BLLM\Lib\site-packages\deepspeed\runtime\config_utils.py:100
+..\..\Users\Shashank Murthy\.conda\envs\150BLLM\Lib\site-packages\deepspeed\runtime\config_utils.py:100
+  C:\Users\Shashank Murthy\.conda\envs\150BLLM\Lib\site-packages\deepspeed\runtime\config_utils.py:100: PydanticDeprecatedSince211: Accessing the 'model_fields' attribute on the instance is deprecated. Instead, you should access this attribute from the model class. Deprecated in Pydantic V2.11 to be removed in V3.0.
+    fields = self.model_fields
+
+tests\integration\test_integration_fixes.py:25
+  c:\PyCharmProjectsSpaceConflict\150BLLM\tests\integration\test_integration_fixes.py:25: PytestCollectionWarning: cannot collect test class 'TestConfig' because it has a __init__ constructor (from: tests/integration/test_integration_fixes.py)
+    @dataclass
+
+tests\integration\test_three_critical_fixes.py:26
+  c:\PyCharmProjectsSpaceConflict\150BLLM\tests\integration\test_three_critical_fixes.py:26: PytestCollectionWarning: cannot collect test class 'TestConfig' because it has a __init__ constructor (from: tests/integration/test_three_critical_fixes.py)
+    @dataclass
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+ERROR tests/test_sm120_tmem_layout.py - Failed: 'sm120' not found in `markers` configuration option
+!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+======================== 7 warnings, 1 error in 14.54s ========================
