@@ -1,0 +1,117 @@
+{
+  "model": {
+    "num_layers": 24,
+    "vocab_size": 51540,
+    "mla": {
+      "d_model": 1536,
+      "d_latent": 384,
+      "num_heads": 12,
+      "num_kv_heads": 4,
+      "use_fp8_kv": false,
+      "max_context_length": 8192,
+      "attn_dropout": 0.1,
+      "rope_theta": 10000.0,
+      "use_flash_mla": false
+    },
+    "moe": {
+      "num_experts": 16,
+      "num_experts_per_token": 2,
+      "expert_intermediate_size": 2048,
+      "dropout": 0.1,
+      "num_shared_experts": 2,
+      "shared_intermediate_size": 3840,
+      "router_aux_loss_weight": 0.001,
+      "use_aux_loss_free": true,
+      "use_deep_ep": false,
+      "n_group": 1,
+      "norm_topk_prob": false,
+      "routed_scaling_factor": 1.0
+    },
+    "audio": {
+      "enable_audio": true,
+      "audio_mode": "spec",
+      "mulaw_stride": 4,
+      "spec_codebook_path": "data/spec_codebook_2048.pt",
+      "phoneme_mode": "none"
+    },
+    "wrapper": {
+      "audio_encoder_model": "facebook/wav2vec2-base",
+      "freeze_audio_encoder": true,
+      "enable_two_stage": false,
+      "audio_tokenizer_mode": "spec"
+    },
+    "norm_eps": 1e-5,
+    "moe_layer_freq": 1,
+    "first_k_dense_replace": 3
+  },
+  "data": {
+    "dataset_type": "paired_audio",
+    "tsv_path": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/en/train_combined_phonemes.tsv",
+    "audio_root_source": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/en/clips",
+    "audio_root_target": "Q:/Coding/Machine Learning/Supervised Learning/speech-to-speech-translatron2/training_data/en/clips_translated",
+    "task": "en2zh",
+    "max_audio_tokens": 512,
+    "augment": false,
+    "max_samples": 10000,
+    "return_raw_audio": true,
+    "preprocessing": {
+      "shuffle": true,
+      "num_workers": 0,
+      "pin_memory": true,
+      "prefetch_factor": 2
+    }
+  },
+  "training": {
+    "micro_batch_size": 2,
+    "gradient_accumulation_steps": 8,
+    "train_steps": 50000,
+    "lr_warmup_steps": 2000,
+    "learning_rate": 3e-4,
+    "min_learning_rate": 3e-5,
+    "adam_beta1": 0.9,
+    "adam_beta2": 0.95,
+    "adam_eps": 1e-8,
+    "weight_decay": 0.1,
+    "grad_clip": 1.0,
+    "use_bf16": false,
+    "use_fp16": false,
+    "log_interval": 10,
+    "eval_interval": 1000,
+    "save_interval": 5000,
+    "lm_loss_weight": 1.0,
+    "mtp_loss_weight": 0.0,
+    "audio_loss_weight": 5.0,
+    "text_loss_weight": 1.0
+  },
+  "gpu_optimization": {
+    "gradient_checkpointing": true,
+    "autocast_dtype": "float32",
+    "compile_model": false,
+    "torch_compile": false,
+    "torch_compile_mode": "default",
+    "dynamo_backend": "inductor"
+  },
+  "distributed": {
+    "enabled": false,
+    "backend": "nccl",
+    "deepspeed": {
+      "config_file": "configs/deepspeed_config_gpu_single.json"
+    }
+  },
+  "checkpointing": {
+    "save_dir": "S:/DL+Diffusion Models/LLM/DL/CKPTS",
+    "max_checkpoints_to_keep": 2,
+    "save_latest": true,
+    "load_checkpoint": null,
+    "load_pretrained_text_model": null,
+    "resume_from": null
+  },
+  "logging": {
+    "tensorboard": {
+      "enabled": true,
+      "log_dir": null
+    }
+  },
+  "output_dir": "S:/DL+Diffusion Models/LLM/DL/CKPTS",
+  "comments": "LLM-centric audio-to-audio translation with wav2vec2 encoder and iSTFT decoder"
+}

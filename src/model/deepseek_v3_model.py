@@ -456,19 +456,29 @@ class DeepSeekV3Model(nn.Module):
         mtp_labels=None,
         past_key_values=None,
         use_cache=False,
+        audio_embeddings=None,  # Optional: Direct embeddings input (for wrapper use)
     ):
         """
-        input_ids: [batch, seq_len]
+        input_ids: [batch, seq_len] - Can be None if audio_embeddings provided
         labels: [batch, seq_len] (standard next-token)
         mtp_labels: [batch, seq_len, mtp_tokens] (for multi-token prediction)
         past_key_values: List of (k_latent, v_latent) tuples from previous steps
         use_cache: Whether to return KV caches for inference
+        audio_embeddings: [batch, seq_len, d_model] - Optional direct embeddings (used by AudioLLMWrapper)
         """
-        bsz, seq_len = input_ids.shape
-        device = input_ids.device
+        # Support audio embeddings for wrapper use
+        if audio_embeddings is not None:
+            # Direct embeddings path (used by AudioLLMWrapper)
+            hidden = audio_embeddings
+            bsz, seq_len = audio_embeddings.shape[:2]
+            device = audio_embeddings.device
+        else:
+            # Standard token embedding path
+            bsz, seq_len = input_ids.shape
+            device = input_ids.device
+            # Token embeddings with modality-specific routing (no learned positional embeddings - using RoPE)
+            hidden = self._get_token_embeddings(input_ids)  # [batch, seq_len, d_model]
 
-        # Token embeddings with modality-specific routing (no learned positional embeddings - using RoPE)
-        hidden = self._get_token_embeddings(input_ids)  # [batch, seq_len, d_model]
         hidden = hidden.transpose(0, 1)  # [seq_len, batch, d_model]
 
         # Build causal mask - need to account for cached sequence length
@@ -481,7 +491,7 @@ class DeepSeekV3Model(nn.Module):
                 # - Regular MLA: [seq_len, batch, latent]
                 # - Flash MLA: [batch, seq_len, latent]
                 cache_tensor = past_kv_first[0] if isinstance(past_kv_first, tuple) else past_kv_first
-                if cache_tensor.dim() >= 3 and cache_tensor.shape[0] == batch_size:
+                if cache_tensor.dim() >= 3 and cache_tensor.shape[0] == bsz:
                     # Flash MLA format: [batch, seq_len, latent]
                     past_seq_len = cache_tensor.shape[1]
                 else:

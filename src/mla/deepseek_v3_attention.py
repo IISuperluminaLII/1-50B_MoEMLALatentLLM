@@ -122,11 +122,28 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
 
 
 def apply_rotary_pos_emb_single(x, cos, sin):
-    """Apply rotary position embeddings to a single tensor."""
-    # Ensure cos/sin have compatible dimensions
-    while cos.dim() < x.dim():
-        cos = cos.unsqueeze(1)
-        sin = sin.unsqueeze(1)
+    """Apply rotary position embeddings to a single tensor.
+
+    Args:
+        x: [batch, seq_len, num_heads, head_dim]
+        cos: [seq_len, head_dim] or compatible shape
+        sin: [seq_len, head_dim] or compatible shape
+    """
+    # Expand cos/sin to match x dimensions
+    # x is [batch, seq_len, num_heads, head_dim]
+    # cos/sin come in as [seq_len, head_dim] typically
+
+    # Add batch dimension if missing
+    if cos.dim() == 2:  # [seq_len, head_dim]
+        cos = cos.unsqueeze(0)  # [1, seq_len, head_dim]
+        sin = sin.unsqueeze(0)
+
+    # Add num_heads dimension if missing
+    if cos.dim() == 3:  # [1, seq_len, head_dim]
+        cos = cos.unsqueeze(2)  # [1, seq_len, 1, head_dim]
+        sin = sin.unsqueeze(2)
+
+    # Broadcast to match x shape
     return (x * cos) + (rotate_half(x) * sin)
 
 

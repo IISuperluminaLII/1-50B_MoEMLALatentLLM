@@ -17,7 +17,7 @@
       "num_kv_heads": 4,
       "use_fp8_kv": false,
       "max_context_length": 512,
-      "use_flash_mla": true,
+      "use_flash_mla": false,
       "flash_mla_backend": "auto",
       "fallback_to_dense": true,
       "use_rope": true,
