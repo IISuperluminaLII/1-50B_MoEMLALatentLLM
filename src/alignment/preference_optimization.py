@@ -6,6 +6,7 @@ Implements the preference optimization phase from DeepSeek-V3:
 - PPO with stable-baselines3 - for full RLHF
 """
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -294,6 +295,14 @@ class DPOTrainer:
                         f"Margin: {metrics['reward_margin']:.3f}"
                     )
 
+            # Final gradient step for any remaining gradients
+            # This handles the case where total batches % accumulation_steps != 0
+            if (batch_idx + 1) % self.config.gradient_accumulation_steps != 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                logger.info(f"Applied final gradient step for {(batch_idx + 1) % self.config.gradient_accumulation_steps} accumulated batches")
+
             # Aggregate epoch metrics
             avg_metrics = {
                 k: np.mean([m[k] for m in epoch_metrics])
@@ -469,7 +478,8 @@ class PPOTrainerCustom:
         )
 
         # Value head (predicts expected returns)
-        self.value_head = nn.Linear(model.config.d_model, 1).to(device)
+        d_model = model.config.mla.d_model if hasattr(model.config, 'mla') else 512
+        self.value_head = nn.Linear(d_model, 1).to(device)
         self.value_optimizer = torch.optim.AdamW(
             self.value_head.parameters(),
             lr=config.learning_rate,
@@ -646,3 +656,102 @@ class PPOTrainerCustom:
             "kl": kl_penalty.mean().item(),
             "advantages": advantages.mean().item(),
         }
+
+    def train(self, num_train_steps: Optional[int] = None) -> Dict[str, List[float]]:
+        """
+        Main training loop for custom PPO.
+
+        Args:
+            num_train_steps: Number of training steps (overrides config)
+
+        Returns:
+            Training history with metrics
+        """
+        logger.info("Starting custom PPO training")
+
+        # Training steps from config or parameter
+        total_steps = num_train_steps or self.config.total_timesteps
+
+        # Initialize history
+        history = {
+            "loss": [],
+            "policy_loss": [],
+            "value_loss": [],
+            "reward": [],
+            "kl": [],
+            "advantages": [],
+        }
+
+        # Create simple prompt dataset
+        prompts = [
+            "What is the capital of France?",
+            "Explain quantum computing in simple terms.",
+            "Write a poem about nature.",
+            "How do you make a sandwich?",
+            "What are the benefits of exercise?",
+            "Describe the water cycle.",
+            "What is machine learning?",
+            "Tell me about the solar system.",
+        ] * (self.config.batch_size // 8 + 1)  # Repeat to fill batch
+
+        # Training loop
+        for step in range(total_steps):
+            # Sample batch of prompts
+            batch_prompts = prompts[:self.config.batch_size]
+
+            # Tokenize prompts
+            encoded_prompts = self.tokenizer(
+                batch_prompts,
+                padding=True,
+                truncation=True,
+                max_length=self.config.max_seq_length // 2,
+                return_tensors="pt"
+            ).to(self.device)
+
+            # Run training step
+            try:
+                metrics = self.train_step({"prompts": encoded_prompts.input_ids})
+
+                # Update history
+                for key in history:
+                    if key in metrics:
+                        history[key].append(metrics[key])
+
+                # Log progress
+                if step % 100 == 0:
+                    logger.info(
+                        f"Step {step}/{total_steps} - "
+                        f"Loss: {metrics['loss']:.4f}, "
+                        f"Reward: {metrics['reward']:.4f}, "
+                        f"KL: {metrics['kl']:.4f}"
+                    )
+
+                # Save checkpoint periodically
+                if step > 0 and step % 1000 == 0:
+                    checkpoint_path = f"{self.config.save_dir}/ppo_step_{step}.pt"
+                    self.save_checkpoint(checkpoint_path)
+                    logger.info(f"Saved checkpoint to {checkpoint_path}")
+
+            except Exception as e:
+                logger.warning(f"Error in training step {step}: {e}")
+                # Continue training even if one step fails
+                continue
+
+        # Save final checkpoint
+        final_path = f"{self.config.save_dir}/ppo_final.pt"
+        self.save_checkpoint(final_path)
+        logger.info(f"Training complete! Saved final model to {final_path}")
+
+        return history
+
+    def save_checkpoint(self, path: str):
+        """Save model checkpoint."""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save({
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "value_head_state_dict": self.value_head.state_dict(),
+            "value_optimizer_state_dict": self.value_optimizer.state_dict(),
+            "config": self.config,
+        }, path)
+        logger.info(f"Checkpoint saved to {path}")

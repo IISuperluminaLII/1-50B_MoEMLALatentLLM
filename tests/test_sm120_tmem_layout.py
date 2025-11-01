@@ -65,6 +65,9 @@ def _compile_harness(nvcc: Path) -> None:
         str(HARNESS_BIN),
     ]
 
+    if os.environ.get("SM120_PROBE_USE_TMEM", "0") in {"1", "true", "TRUE", "yes", "YES"}:
+        cmd_parts.insert(-3, "-DPROBE_USE_TMEM=1")
+
     if os.name == "nt":
         vcvars = _find_vcvars64()
         if vcvars:

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import math
 import warnings
+from typing import Optional
 
 from .mla import RMSNorm
 from ..mla.deepseek_v3_attention import DeepseekV3Attention
@@ -369,6 +370,8 @@ class DeepSeekV3Model(nn.Module):
 
         # Heads: Next-token LM head + MTP
         self.lm_head = nn.Linear(d_model, config.vocab_size, bias=False)
+        # Tie LM head weights to embeddings per DeepSeek-V3 spec (saves parameters)
+        self.lm_head.weight = self.token_embedding.weight
         # MTP head with embedding routing support
         self.mtp_head = MTPHead(d_model, config.vocab_size, mtp_tokens=self.mtp_tokens, embedding_layer=None)
         # Pass embedding router to MTP head
@@ -474,8 +477,16 @@ class DeepSeekV3Model(nn.Module):
             # Get it from the first layer's cache (all layers have same cache length)
             past_kv_first = past_key_values[0]
             if past_kv_first is not None:
-                # past_kv is (k_latent, v_latent) where shape is [past_seq_len, batch, d_latent]
-                past_seq_len = past_kv_first[0].shape[0]
+                # Handle both cache formats:
+                # - Regular MLA: [seq_len, batch, latent]
+                # - Flash MLA: [batch, seq_len, latent]
+                cache_tensor = past_kv_first[0] if isinstance(past_kv_first, tuple) else past_kv_first
+                if cache_tensor.dim() >= 3 and cache_tensor.shape[0] == batch_size:
+                    # Flash MLA format: [batch, seq_len, latent]
+                    past_seq_len = cache_tensor.shape[1]
+                else:
+                    # Regular MLA format: [seq_len, batch, latent]
+                    past_seq_len = cache_tensor.shape[0]
                 full_seq_len = past_seq_len + seq_len
 
                 # Create a causal mask that allows current queries to attend to all past tokens

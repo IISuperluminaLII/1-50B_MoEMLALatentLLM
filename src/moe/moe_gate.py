@@ -138,7 +138,10 @@ class MoEGate(nn.Module):
         # NoAux: no auxiliary loss
         aux_loss = None
 
-        return topk_idx, topk_weight, aux_loss
+        # Return gate logits for compatibility with DeepSeekMoE
+        gate_logits = gate_logits if 'gate_logits' in locals() else gate
+
+        return topk_idx, topk_weight, gate_logits, aux_loss
 
     def _group_limited_topk(self, scores: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """

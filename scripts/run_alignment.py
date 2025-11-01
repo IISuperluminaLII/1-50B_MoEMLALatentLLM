@@ -341,7 +341,37 @@ def main():
 
     # Initialize or load model
     logger.info("Initializing model...")
-    config = DeepSeekConfig(**model_config)
+    # Build proper config from YAML dict
+    from src.config.model_config import MLAConfig, MoEConfig, ParallelConfig, TrainingConfig
+
+    # Convert model_config dict to DeepSeekV3Config
+    mla_config = MLAConfig(**model_config.get("mla", {}))
+    moe_config = MoEConfig(**model_config.get("moe", {}))
+    parallel_config = ParallelConfig(**model_config.get("parallel", {
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+        "expert_parallel_size": 1,
+        "data_parallel_size": 1,
+        "zero_stage": 0,
+        "zero_offload": False,
+        "overlap_grad_reduce": False,
+        "overlap_param_gather": False,
+    }))
+    training_config = TrainingConfig(**model_config.get("training", {}))
+
+    config = DeepSeekV3Config(
+        mla=mla_config,
+        moe=moe_config,
+        parallel=parallel_config,
+        training=training_config,
+        num_layers=model_config.get("num_layers", 32),
+        vocab_size=model_config.get("vocab_size", 129280),
+        norm_type=model_config.get("norm_type", "rmsnorm"),
+        norm_eps=model_config.get("norm_eps", 1e-6),
+        tie_word_embeddings=model_config.get("tie_word_embeddings", True),
+        init_method_std=model_config.get("init_method_std", 0.006),
+    )
+
     model = DeepSeekV3Model(config).to(args.device)
 
     # Load pretrained checkpoint if starting from SFT

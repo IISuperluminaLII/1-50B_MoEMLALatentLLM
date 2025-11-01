@@ -180,7 +180,7 @@ class DeepseekV3Attention(nn.Module):
         # RoPE configuration
         self.max_position_embeddings = config.get('max_position_embeddings', 163840)
         self.rope_theta = config.get('rope_theta', 10000.0)
-        rope_scaling = config.get('rope_scaling', {})
+        rope_scaling = config.get('rope_scaling') or {}
         self.rope_scaling_factor = rope_scaling.get('factor', 1.0)
         self.rope_scaling_type = rope_scaling.get('type', 'default')
 
@@ -290,9 +290,11 @@ class DeepseekV3Attention(nn.Module):
 
         # Handle KV cache at latent level for memory efficiency
         if past_key_value is not None:
-            # Past KV should be tuple of (k_latent, v_latent)
-            # Concatenate along sequence dimension (dim=1), not feature dimension
-            past_kv_latent = past_key_value
+            # Past KV should be tuple of (k_latent, v_latent) in [seq, batch, latent] format
+            # For MLA, K and V share the same latent, so we just use the first element
+            past_kv_latent = past_key_value[0] if isinstance(past_key_value, tuple) else past_key_value
+            # Transpose from [seq, batch, latent] to [batch, seq, latent] for processing
+            past_kv_latent = past_kv_latent.transpose(0, 1)
             # Simply concatenate new compressed KV with past latent KV along sequence dim
             kv_latent_with_cache = torch.cat([past_kv_latent, kv_compressed], dim=1)
         else:
@@ -300,9 +302,13 @@ class DeepseekV3Attention(nn.Module):
 
         # Update latent cache if needed (before expansion)
         if use_cache:
-            # Store the full latent KV for next iteration
-            # This preserves the compact latent representation per DeepSeek-V3 paper
-            present_key_value = kv_latent_with_cache
+            # Store as (k_latent, v_latent) tuple in [seq, batch, latent] format
+            # This matches DeepSeek-V3 spec and DeepSeekV3Model expectations
+            # Transpose from [batch, seq, latent] to [seq, batch, latent]
+            kv_transposed = kv_latent_with_cache.transpose(0, 1)
+            # Split into k and v components (both have kv_lora_rank dimensions)
+            # Return as tuple for compatibility
+            present_key_value = (kv_transposed, kv_transposed)  # K and V share same latent
         else:
             present_key_value = None
 
