@@ -73,6 +73,12 @@ class PPOConfig:
     vf_coef: float = 0.5  # Value function coefficient
     ent_coef: float = 0.01  # Entropy coefficient
 
+    # Alternative naming (for compatibility with custom trainer)
+    ppo_epochs: int = 10  # Same as n_epochs
+    value_coef: float = 0.5  # Same as vf_coef
+    temperature: float = 1.0  # Sampling temperature for generation
+    max_grad_norm: float = 0.5  # Gradient clipping
+
     # KL penalty (to prevent diverging from SFT model)
     kl_coef: float = 0.02
     target_kl: float = 0.01  # Early stopping if KL exceeds this

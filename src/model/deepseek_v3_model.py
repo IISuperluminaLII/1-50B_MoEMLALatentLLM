@@ -114,15 +114,18 @@ class MLAOnlyBlock(nn.Module):
             # Transpose output back to [seq_len, batch, d_model]
             hidden_states = mla_output.hidden_states.transpose(0, 1)
         else:
-            # Regular MLA works with [seq_len, batch, d_model] directly
+            # Regular MLA (DeepseekV3Attention) expects [batch, seq_len, d_model]
+            # Transpose from [seq_len, batch, d_model] to [batch, seq_len, d_model]
+            normed_x_transposed = normed_x.transpose(0, 1)
             mla_output = self.mla(
-                normed_x,
+                normed_x_transposed,
                 causal_mask=causal_mask,
                 key_padding_mask=key_padding_mask,
                 past_key_value=past_key_value,
                 use_cache=use_cache,
             )
-            hidden_states = mla_output.hidden_states
+            # Transpose output back to [seq_len, batch, d_model]
+            hidden_states = mla_output.hidden_states.transpose(0, 1)
 
         x = x + hidden_states
 
@@ -229,15 +232,18 @@ class MLAPlusMoEBlock(nn.Module):
             # Transpose output back to [seq_len, batch, d_model]
             hidden_states = mla_output.hidden_states.transpose(0, 1)
         else:
-            # Regular MLA works with [seq_len, batch, d_model] directly
+            # Regular MLA (DeepseekV3Attention) expects [batch, seq_len, d_model]
+            # Transpose from [seq_len, batch, d_model] to [batch, seq_len, d_model]
+            normed_x_transposed = normed_x.transpose(0, 1)
             mla_output = self.mla(
-                normed_x,
+                normed_x_transposed,
                 causal_mask=causal_mask,
                 key_padding_mask=key_padding_mask,
                 past_key_value=past_key_value,
                 use_cache=use_cache,
             )
-            hidden_states = mla_output.hidden_states
+            # Transpose output back to [seq_len, batch, d_model]
+            hidden_states = mla_output.hidden_states.transpose(0, 1)
 
         x = x + hidden_states
 
@@ -346,6 +352,13 @@ class DeepSeekV3Model(nn.Module):
                     router_temperature=getattr(config.moe, 'router_temperature', 1.0),
                     router_noise_std=getattr(config.moe, 'router_noise_std', 0.1),
                     min_expert_capacity=getattr(config.moe, 'min_expert_capacity', 4),
+                    # Grouped routing parameters (DeepSeek-V3 NoAux token-choice)
+                    n_group=getattr(config.moe, 'n_group', 1),
+                    topk_group=getattr(config.moe, 'topk_group', None),
+                    norm_topk_prob=getattr(config.moe, 'norm_topk_prob', False),
+                    routed_scaling_factor=getattr(config.moe, 'routed_scaling_factor', 1.0),
+                    topk_method=getattr(config.moe, 'topk_method', 'greedy'),
+                    scoring_func=getattr(config.moe, 'scoring_func', 'softmax'),
                     # Fine-grained expert segmentation (DeepSeek-V3 paper)
                     num_expert_segments=getattr(config.moe, 'num_expert_segments', 1),
                     expert_segment_sizes=getattr(config.moe, 'expert_segment_sizes', None),
@@ -654,3 +667,119 @@ class DeepSeekV3Model(nn.Module):
         output.moe_metrics = aggregated_moe_metrics  # Aggregated expert stats (now a flat dict for trainer)
 
         return output
+
+        return output
+
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int = 50,
+        temperature: float = 1.0,
+        do_sample: bool = True,
+        top_p: float = 0.9,
+        top_k: int = 50,
+        pad_token_id: Optional[int] = None,
+        eos_token_id: Optional[int] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Generate text using autoregressive decoding.
+
+        Args:
+            input_ids: Input token IDs [batch_size, seq_len]
+            max_new_tokens: Maximum number of tokens to generate
+            temperature: Sampling temperature
+            do_sample: Whether to use sampling or greedy decoding
+            top_p: Nucleus sampling threshold
+            top_k: Top-k sampling
+            pad_token_id: Padding token ID
+            eos_token_id: End-of-sequence token ID
+            attention_mask: Attention mask for inputs
+            **kwargs: Additional generation arguments
+
+        Returns:
+            Generated token IDs [batch_size, seq_len + generated_len]
+        """
+        batch_size = input_ids.shape[0]
+        device = input_ids.device
+        
+        # Initialize generation
+        generated = input_ids
+        past_key_values = None
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        
+        # Set default token IDs if not provided
+        if eos_token_id is None:
+            eos_token_id = 2  # Default EOS
+        if pad_token_id is None:
+            pad_token_id = 0  # Default PAD
+            
+        for _ in range(max_new_tokens):
+            # Forward pass with caching
+            with torch.no_grad():
+                outputs = self.forward(
+                    input_ids=generated if past_key_values is None else generated[:, -1:],
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=True
+                )
+                
+            logits = outputs.logits
+            past_key_values = outputs.past_key_values
+            
+            # Get next token logits
+            next_token_logits = logits[:, -1, :]
+            
+            # Apply temperature
+            if temperature != 1.0:
+                next_token_logits = next_token_logits / temperature
+                
+            # Sample or greedy decode
+            if do_sample:
+                # Apply top-k filtering
+                if top_k > 0:
+                    indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+                    next_token_logits[indices_to_remove] = float("-inf")
+                    
+                # Apply top-p (nucleus) filtering
+                if top_p < 1.0:
+                    sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
+                    cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                    
+                    # Remove tokens with cumulative probability above threshold
+                    sorted_indices_to_remove = cumulative_probs > top_p
+                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                    sorted_indices_to_remove[..., 0] = False
+                    
+                    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                    next_token_logits[indices_to_remove] = float("-inf")
+                    
+                # Sample from distribution
+                probs = torch.softmax(next_token_logits, dim=-1)
+                next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
+            else:
+                # Greedy decoding
+                next_tokens = torch.argmax(next_token_logits, dim=-1)
+                
+            # Handle finished sequences
+            next_tokens[finished] = pad_token_id
+            
+            # Update finished status
+            finished = finished | (next_tokens == eos_token_id)
+            
+            # Concatenate generated tokens
+            generated = torch.cat([generated, next_tokens.unsqueeze(1)], dim=-1)
+            
+            # Update attention mask if provided
+            if attention_mask is not None:
+                attention_mask = torch.cat([
+                    attention_mask,
+                    (~finished).unsqueeze(1).to(attention_mask.dtype)
+                ], dim=-1)
+                
+            # Stop if all sequences are finished
+            if finished.all():
+                break
+                
+        return generated
